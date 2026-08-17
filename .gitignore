@@ -8,3 +8,4 @@ config.json
 # Runtime output: discovered node data (GPS coords, MACs) and session logs
 *.csv
 logs/
+ref/
