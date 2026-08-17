@@ -70,6 +70,12 @@ class MeshCoreWorker:
         self._stop_event = None
         self._contacts_sync_lock = None
         self._resync_pending = False
+        # Set while _clear_all_contacts's bulk loop is removing every
+        # contact, so _record_nodes's own auto-clear (triggered by the same
+        # get_contacts() refresh _clear_all_contacts forces) doesn't try to
+        # remove the same contacts a second time -- see _remove_contact's
+        # docstring for why that race matters.
+        self._bulk_clearing = False
         # Set the instant stop() is called even if _main() hasn't started
         # running yet (or hasn't reached its first line) and
         # self._stop_event is still None -- without this, a disconnect
@@ -295,7 +301,7 @@ class MeshCoreWorker:
             row["last_heard"] = now
         save_known_nodes(known_nodes, csv_path)
 
-        if self.auto_clear_contacts:
+        if self.auto_clear_contacts and not self._bulk_clearing:
             # Once a node is safely persisted to our CSV, its device-side
             # contact slot isn't needed anymore -- removing it here keeps
             # the device's (limited) contact table free for discovering
@@ -304,12 +310,15 @@ class MeshCoreWorker:
             # just newly-seen ones, so a node that reappears on the device
             # after an earlier removal (e.g. re-heard later) gets cleared
             # again rather than being left there because it wasn't "new".
+            # Skipped entirely while a bulk "Clear device contacts" is in
+            # progress -- that loop's own get_contacts() refresh would
+            # otherwise trigger this same auto-clear concurrently on the
+            # same contacts it's already removing (see _remove_contact).
             for c in nodes:
-                try:
-                    await self.meshcore.commands.remove_contact(c)
-                except Exception as exc:
+                ok, detail = await self._remove_contact(c)
+                if not ok:
                     name = c.get("adv_name") or c["public_key"][:8]
-                    self.ui_queue.put(("log", f"-- Failed to auto-clear {name} from device: {exc} --"))
+                    self.ui_queue.put(("log", f"-- Failed to auto-clear {name} from device: {detail} --"))
 
         if not new_node_ids:
             return
@@ -348,6 +357,24 @@ class MeshCoreWorker:
                 payload_str = payload_str[:200] + "…"
         self.ui_queue.put(("log", f"[{ts}] {event.type.value}: {payload_str}"))
 
+    async def _remove_contact(self, c):
+        """Remove one contact from the device, treating "already gone"
+        (ERR_CODE_NOT_FOUND) as success rather than a failure -- it just
+        means something else (a concurrent auto-clear, another resync)
+        removed it first, not that removal is actually broken.
+        commands.remove_contact() doesn't raise for a device-level error,
+        it returns an Event, so the result has to be checked directly
+        rather than relying on try/except.
+
+        Returns (ok, detail): ok is True if the contact is gone either way;
+        detail is the failure's code_string when ok is False.
+        """
+        result = await self.meshcore.commands.remove_contact(c)
+        if result.type != EventType.ERROR:
+            return True, None
+        code = result.payload.get("code_string", result.payload)
+        return code == "ERR_CODE_NOT_FOUND", code
+
     async def _clear_all_contacts(self):
         # meshcore.contacts is only as fresh as the last resync, and nothing
         # forces one right after connecting (_request_resync only fires off
@@ -360,14 +387,23 @@ class MeshCoreWorker:
             await self.meshcore.commands.get_contacts()
         targets = list(self.meshcore.contacts.values())
         self.ui_queue.put(("log", f"-- Removing {len(targets)} device contact(s) --"))
-        removed = 0
-        for c in targets:
-            try:
-                await self.meshcore.commands.remove_contact(c)
-                removed += 1
-            except Exception as exc:
-                name = c.get("adv_name") or c["public_key"][:8]
-                self.ui_queue.put(("log", f"-- Failed to remove {name}: {exc} --"))
+        # The get_contacts() above is itself a CONTACTS event that _on_contacts
+        # (a global subscriber, not just this method's caller) also reacts
+        # to -- with auto_clear_contacts on, that would otherwise start
+        # removing the same contacts this loop is about to remove. Suppress
+        # that path for the duration so the two don't race each other.
+        self._bulk_clearing = True
+        try:
+            removed = 0
+            for c in targets:
+                ok, detail = await self._remove_contact(c)
+                if ok:
+                    removed += 1
+                else:
+                    name = c.get("adv_name") or c["public_key"][:8]
+                    self.ui_queue.put(("log", f"-- Failed to remove {name}: {detail} --"))
+        finally:
+            self._bulk_clearing = False
         self.ui_queue.put(("log", f"-- Removed {removed}/{len(targets)} contact(s) --"))
         await self.meshcore.commands.get_contacts()
 
