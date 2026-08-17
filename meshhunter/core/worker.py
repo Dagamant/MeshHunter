@@ -29,7 +29,7 @@ from .constants import (
 from .node_utils import derive_node_id, has_coords, node_names
 from .paths import ALL_CONTACTS_CSV_PATH, EXTRA_NODE_TYPES, REPEATERS_CSV_PATH
 from .storage import load_all_contacts, load_known_nodes, save_all_contacts, save_known_nodes
-from .log_format import format_rx_log
+from .log_format import format_channel_msg, format_contact_msg, format_rx_log
 from .uploads import build_ingest_records, build_meshcore_records, send_to_ingest_api, upload_to_wdgwars
 
 
@@ -76,6 +76,10 @@ class MeshCoreWorker:
         # remove the same contacts a second time -- see _remove_contact's
         # docstring for why that race matters.
         self._bulk_clearing = False
+        # channel_idx -> resolved name (or None), cached lazily by
+        # _resolve_channel_name so a channel message doesn't need a fresh
+        # device round-trip every time.
+        self._channel_names = {}
         # Set the instant stop() is called even if _main() hasn't started
         # running yet (or hasn't reached its first line) and
         # self._stop_event is still None -- without this, a disconnect
@@ -138,7 +142,13 @@ class MeshCoreWorker:
         meshcore.subscribe(EventType.ADVERTISEMENT, self._request_resync)
         meshcore.subscribe(EventType.PATH_UPDATE, self._request_resync)
         meshcore.subscribe(None, self._on_any_event)
+        # self.meshcore must be set before start_auto_message_fetching() --
+        # it does its own immediate get_msg() call internally, which can
+        # dispatch a CONTACT_MSG_RECV/CHANNEL_MSG_RECV event (and thus call
+        # into _resolve_sender_name/_resolve_channel_name, which need
+        # self.meshcore) before that call even returns.
         self.meshcore = meshcore
+        await meshcore.start_auto_message_fetching()
 
         self.known_repeaters = load_known_nodes(REPEATERS_CSV_PATH)
         self.known_all_contacts = load_all_contacts(ALL_CONTACTS_CSV_PATH)
@@ -155,6 +165,7 @@ class MeshCoreWorker:
         await self._stop_event.wait()
 
         self.meshcore = None
+        await meshcore.stop_auto_message_fetching()
         await meshcore.disconnect()
         self.ui_queue.put(("status", "Disconnected"))
 
@@ -351,11 +362,44 @@ class MeshCoreWorker:
         ts = time.strftime("%H:%M:%S")
         if event.type == EventType.RX_LOG_DATA:
             payload_str = format_rx_log(event.payload or {})
+        elif event.type == EventType.CONTACT_MSG_RECV:
+            payload = event.payload or {}
+            payload_str = format_contact_msg(payload, await self._resolve_sender_name(payload))
+        elif event.type == EventType.CHANNEL_MSG_RECV:
+            payload = event.payload or {}
+            payload_str = format_channel_msg(payload, await self._resolve_channel_name(payload.get("channel_idx")))
         else:
             payload_str = str(event.payload)
             if len(payload_str) > 200:
                 payload_str = payload_str[:200] + "…"
         self.ui_queue.put(("log", f"[{ts}] {event.type.value}: {payload_str}"))
+
+    async def _resolve_sender_name(self, payload):
+        """Best-effort sender display name for a CONTACT_MSG_RECV payload --
+        the payload only carries a pubkey prefix, not a name. Never raises;
+        an unresolved sender just falls back to a short prefix."""
+        prefix = payload.get("pubkey_prefix") or ""
+        contact = self.meshcore.get_contact_by_key_prefix(prefix) if self.meshcore else None
+        if contact:
+            return contact.get("adv_name") or contact.get("public_key", "")[:8]
+        return f"{prefix[:8]}…" if prefix else "unknown"
+
+    async def _resolve_channel_name(self, idx):
+        """Best-effort channel name for a channel_idx, cached in
+        self._channel_names so a channel message doesn't need a fresh
+        device round-trip every time."""
+        if idx is None:
+            return None
+        if idx in self._channel_names:
+            return self._channel_names[idx]
+        if self.meshcore is None:
+            return None
+        name = None
+        result = await self.meshcore.commands.get_channel(idx)
+        if result.type != EventType.ERROR:
+            name = result.payload.get("channel_name") or None
+        self._channel_names[idx] = name
+        return name
 
     async def _remove_contact(self, c):
         """Remove one contact from the device, treating "already gone"

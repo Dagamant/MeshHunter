@@ -43,6 +43,35 @@ def format_rx_log(d):
     return " ".join(parts)
 
 
+def format_contact_msg(d, sender_name):
+    """Render a decoded CONTACT_MSG_RECV (direct message) payload.
+
+    sender_name is pre-resolved by the caller (worker.py, via
+    meshcore.get_contact_by_key_prefix) -- pass a fallback string, not
+    None, if resolution failed.
+    """
+    parts = [f"from={sender_name!r}"]
+    if d.get("text") is not None:
+        parts.append(f"msg={d['text']!r}")
+    return " ".join(parts)
+
+
+def format_channel_msg(d, channel_name):
+    """Render a decoded CHANNEL_MSG_RECV (channel message) payload.
+
+    channel_name is pre-resolved by the caller (worker.py, via
+    commands.get_channel) -- pass None if unresolved/unnamed, falls back
+    to showing the raw channel_idx.
+    """
+    if channel_name:
+        parts = [f"chan={channel_name!r}"]
+    else:
+        parts = [f"chan_idx={d.get('channel_idx')} (unnamed channel)"]
+    if d.get("text") is not None:
+        parts.append(f"msg={d['text']!r}")
+    return " ".join(parts)
+
+
 # --- Terminal log line coloring -------------------------------------------
 # Classifies each already-composed log line string (the same text that's
 # written to the plaintext session log) into colored spans, rather than
