@@ -1,0 +1,91 @@
+<p align="center">
+  <img src="meshhunter/gui_qt/assets/logo.png" alt="MeshHunter" width="360">
+</p>
+
+# MeshHunter
+
+A PySide6 desktop app for logging [MeshCore](https://meshcore.co.uk/) mesh
+network nodes. Connect to a MeshCore device over serial or BLE, and
+MeshHunter records every node it hears — repeaters, chat/companion nodes,
+rooms, and sensors — with GPS coordinates, and can auto-upload discoveries
+to [WDGWars](https://wdgwars.pl) and/or a self-hosted ingest API.
+
+## Features
+
+- Connect to a MeshCore device over **serial or BLE**
+- Logs **all node types** (repeater, chat, room, sensor) that advertise GPS coordinates, each to its own CSV
+- Optional GPS receiver support for tagging *where you were* when a node was heard
+- Auto-upload to **WDGWars** and/or a self-hosted **wardriver ingest API**, immediate or batched
+- Send 0-hop/flood adverts and clear the device's stored contacts from the GUI
+- Full serial terminal log, saved to a session log file per connection
+
+## Requirements
+
+- Python 3.11+ (developed against 3.13)
+- A MeshCore-compatible device reachable over serial or BLE
+
+## Setup
+
+```bash
+git clone https://github.com/Dagamant/MeshHunter.git
+cd MeshHunter
+./run.sh
+```
+
+`run.sh` creates a `venv/`, installs `requirements.txt` into it, and launches
+the app. On later runs it just launches — re-run `pip install -r
+requirements.txt` yourself after pulling changes that touch dependencies.
+
+## Configuration
+
+Copy `example-config.json` to `config.json` in the project root (or edit the
+fields from the Settings dialog once the app is running — it writes back to
+the same file):
+
+```json
+{
+  "serial_device": "",
+  "api_key": "",
+  "auto_upload": false,
+  "auto_clear_contacts": false,
+  "batch_uploads": false
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `serial_device` | Last-selected device, in the rail's device picker |
+| `api_key` | Your WDGWars API key (from `wdgwars.pl/profile`) |
+| `auto_upload` | Upload newly-logged nodes to WDGWars as they're heard |
+| `auto_clear_contacts` | Remove a node from the device's contact table once it's safely logged, to free up space for new ones |
+| `batch_uploads` | Defer uploads to the "Send pending batch" button instead of sending immediately |
+
+Two power-user sections only appear once you've added their keys to
+`config.json` at least once:
+
+| Field | Meaning |
+|---|---|
+| `gps_port`, `gps_enabled` | Serial GPS receiver for logger-location tagging |
+| `ingest_url`, `ingest_api_key`, `ingest_auto_send` | A self-hosted ingest API (see `POST /endpoint/upload/`-style ingest, not WDGWars) |
+
+`config.json` is gitignored — it holds your real API keys, never commit it.
+
+## Usage
+
+1. Launch the app (`./run.sh`), pick your device from the CONNECTION panel in
+   the left rail, and hit **Connect**.
+2. Discovered nodes are written to CSVs in the app's per-OS data directory
+   (`repeaters.csv`, `chat_nodes.csv`, `room_nodes.csv`, `sensor_nodes.csv`,
+   plus `all_contacts.csv` for every contact regardless of GPS status).
+3. With `auto_upload` enabled and an API key set, newly-logged nodes upload
+   to WDGWars automatically. Otherwise, use **Send pending batch** to send
+   whatever's queued up.
+4. Open **Settings** for GPS, endpoint, and automation configuration.
+
+## Project layout
+
+```
+main.py                   entry point
+meshhunter/core/          MeshCore connection, uploads, config, storage
+meshhunter/gui_qt/        PySide6 GUI (main window, rail widgets, theme)
+```
