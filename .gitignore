@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+
+# Real config with API keys -- example-config.json is the tracked template
+config.json
+
+# Runtime output: discovered node data (GPS coords, MACs) and session logs
+*.csv
+logs/
