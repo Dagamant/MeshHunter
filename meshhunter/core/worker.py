@@ -374,6 +374,16 @@ class MeshCoreWorker:
                 ).start()
 
     async def _on_any_event(self, event):
+        if event.type == EventType.ERROR and (event.payload or {}).get("code_string") == "ERR_CODE_NOT_FOUND":
+            # meshcore's dispatcher broadcasts every event to every
+            # subscriber, including this catch-all -- so the same ERROR
+            # event that a specific command's own send() call already
+            # consumed and handled (_remove_contact treats "not found" as
+            # "already gone", not a failure; _resolve_channel_name treats
+            # it as "no name set") would otherwise also print here as a
+            # raw, alarming-looking command_error line for something that
+            # isn't actually a problem.
+            return
         ts = time.strftime("%H:%M:%S")
         if event.type == EventType.RX_LOG_DATA:
             payload_str = format_rx_log(event.payload or {})
