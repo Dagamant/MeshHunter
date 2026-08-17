@@ -101,6 +101,21 @@ class MeshCoreWorker:
         if self._stop_event is not None:
             self._stop_event.set()
 
+    def apply_config(self, config):
+        """Push live-updatable settings from a fresh config dict onto this
+        already-running worker, so a Settings change (e.g. a new ingest API
+        key/URL) takes effect on the next upload instead of only on the
+        next connect. port/connection_kind are fixed for the life of a
+        connection and intentionally excluded.
+        """
+        self.api_key = config["api_key"]
+        self.auto_upload = config["auto_upload"]
+        self.ingest_url = config["ingest_url"]
+        self.ingest_api_key = config["ingest_api_key"]
+        self.ingest_auto_send = config["ingest_auto_send"]
+        self.auto_clear_contacts = config["auto_clear_contacts"]
+        self.batch_uploads = config["batch_uploads"]
+
     def clear_all_contacts(self):
         """Remove every contact (all types) stored on the device."""
         if self.meshcore is not None:

@@ -277,6 +277,8 @@ class MainWindow(QMainWindow):
         self.config_data = new_config
         save_config(self.config_data)
         self._log_line("Config saved")
+        if self.worker is not None:
+            self.worker.apply_config(self.config_data)
         self.sync_panel.set_send_pending_visible(self.config_data.get("batch_uploads", False))
         if (
             self.config_data.get("gps_port", "") != gps_port_before
