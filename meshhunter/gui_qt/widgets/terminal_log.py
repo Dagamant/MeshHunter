@@ -1,5 +1,5 @@
-"""The terminal-style scrolling log view: header (title + Clear button),
-tag-colored body, and a footer with a blinking prompt cursor.
+"""The terminal-style scrolling log view: header (title + Clear button)
+and a tag-colored body.
 
 Unlike the tkinter version, this needs no window-drag-selects-text
 workaround (see main_tk.py's _on_terminal_press/_on_terminal_motion) --
@@ -7,9 +7,8 @@ that defended against a raw tk.Text-specific event-model bug under
 XWayland that QPlainTextEdit doesn't have.
 """
 
-from PySide6.QtCore import QTimer
 from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QPlainTextEdit, QVBoxLayout, QWidget
 
 from ...core.constants import TERMINAL_MAX_LINES
 from ...core.log_format import classify_log_line
@@ -20,8 +19,6 @@ from ..theme import (
     LOG_OK,
     LOG_PATH,
     LOG_WARN,
-    RAIL_TOP,
-    TERMINAL_BG,
     TERMINAL_DIVIDER,
     TXT,
     pick_mono_font,
@@ -41,12 +38,6 @@ class TerminalLog(QWidget):
 
         layout.addWidget(self._build_header())
         layout.addWidget(self._build_body(), stretch=1)
-        layout.addWidget(self._build_footer())
-
-        self._cursor_on = True
-        self._blink_timer = QTimer(self)
-        self._blink_timer.timeout.connect(self._blink_cursor)
-        self._blink_timer.start(550)
 
     def _build_header(self):
         header = QFrame()
@@ -88,30 +79,6 @@ class TerminalLog(QWidget):
             self._formats[tag] = fmt
 
         return self.terminal
-
-    def _build_footer(self):
-        footer = QFrame()
-        footer.setStyleSheet(f"background-color: {TERMINAL_BG};")
-        footer.setFixedHeight(26)
-        row = QHBoxLayout(footer)
-        row.setContentsMargins(16, 0, 16, 0)
-
-        prompt = QLabel("❯")
-        prompt.setStyleSheet(f"font-family: '{self._mono}'; font-size: 12px; color: {ACCENT};")
-        row.addWidget(prompt)
-
-        self.cursor_block = QLabel("")
-        self.cursor_block.setFixedSize(8, 15)
-        self.cursor_block.setStyleSheet(f"background-color: {ACCENT};")
-        row.addWidget(self.cursor_block)
-        row.addStretch(1)
-
-        return footer
-
-    def _blink_cursor(self):
-        self._cursor_on = not self._cursor_on
-        color = ACCENT if self._cursor_on else TERMINAL_BG
-        self.cursor_block.setStyleSheet(f"background-color: {color};")
 
     def append_line(self, line):
         scrollbar = self.terminal.verticalScrollBar()
