@@ -82,6 +82,34 @@ Two power-user sections only appear once you've added their keys to
    whatever's queued up.
 4. Open **Settings** for GPS, endpoint, and automation configuration.
 
+## Data sent over each API
+
+Both endpoints only ever receive **node data you've logged** (id, type,
+name, position, signal strength, timestamps) — never your config file,
+device identity, or anything from the serial terminal log.
+
+### WDGWars (`POST https://wdgwars.pl/api/upload/`)
+
+Fixed endpoint, not configurable. Per node: `node_id`, `node_type`,
+`name`, `lat`, `lon`, `rssi`, `first_seen`, `type` (`"MESHCORE"`),
+`network` (`"meshcore"`), and `public_key` when known. Records are
+wrapped in a signed envelope — `{"data": <base64 JSON>, "nonce": ...,
+"sig": HMAC-SHA256(nonce + data, your API key)}` — sent alongside an
+`X-API-Key` header. Your API key is used as the HMAC secret and is also
+sent directly in the header on every request.
+
+### Self-hosted ingest API (your own `ingest_url`)
+
+Only sent if you've configured one — off by default. Per node:
+`public_key` and `node_type` (required; only `REPEATER`/`CHAT`/`ROOM` are
+sent, `SENSOR` rows are skipped), plus whichever of `node_id`, `name`,
+`lat`, `lon`, `rssi`, `first_seen`, `last_heard`, `network`, `type` are
+known. Also includes `logger_lat`/`logger_lon` — *your* position (from
+the configured GPS receiver) when you first logged that node, not the
+node's own advertised position — which isn't part of the standard
+ingest schema, so a strict server-side validator may need to allow it.
+Sent as a plain JSON array with an `X-API-Key` header (no HMAC signing).
+
 ## Device modifications
 
 MeshHunter mostly reads from a connected device, but a few actions do
@@ -114,8 +142,9 @@ change what's stored on it:
   every connect. This is not optional/configurable, and it persists on
   the device after you disconnect, like any other device setting change.
 
-MeshHunter never adds new contacts, changes device settings (name, radio
-parameters, channel keys), or sends chat/channel messages on your behalf.
+Beyond what's listed above, MeshHunter never adds new contacts, changes
+other device settings (name, radio parameters, channel keys), or sends
+chat/channel messages on your behalf.
 
 ## Project layout
 
