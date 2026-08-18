@@ -82,6 +82,34 @@ Two power-user sections only appear once you've added their keys to
    whatever's queued up.
 4. Open **Settings** for GPS, endpoint, and automation configuration.
 
+## Device modifications
+
+MeshHunter mostly reads from a connected device, but a few actions do
+change what's stored on it:
+
+- **Removing contacts.** The **"Clear device contacts"** button removes
+  *every* contact (any type, including chat/companion contacts) from the
+  device's stored contact table. If `auto_clear_contacts` is enabled in
+  Settings (off by default), each node is also removed individually right
+  after MeshHunter logs it to CSV — this keeps the device's (limited)
+  contact table free for new discoveries, but means a node won't show up
+  in the device's own contact list again until it's heard once more.
+- **Draining pending messages.** On every connect, MeshHunter
+  automatically fetches any messages waiting on the device, in order to
+  decode and display them in the terminal log. This is not optional/
+  configurable. Fetching a message removes it from the device's queue —
+  if you also use another companion app (a phone app, `meshcore-cli`,
+  etc.) against the same device, whichever client fetches a message first
+  is the one that receives it.
+- **Sending adverts.** The **0-hop** / **Flood** buttons cause the device
+  to actually **transmit an advertisement packet over the air**, the same
+  as pressing the advertise button on the device itself — a Flood advert
+  is rebroadcast by other repeaters that hear it, using real mesh airtime.
+  Manual only, never automatic.
+
+MeshHunter never adds new contacts, changes device settings (name, radio
+parameters, channel keys), or sends chat/channel messages on your behalf.
+
 ## Project layout
 
 ```
@@ -89,3 +117,8 @@ main.py                   entry point
 meshhunter/core/          MeshCore connection, uploads, config, storage
 meshhunter/gui_qt/        PySide6 GUI (main window, rail widgets, theme)
 ```
+
+## License
+
+[BSD Zero Clause License](LICENSE) — do whatever you want with this, no
+attribution required.
