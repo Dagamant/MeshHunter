@@ -106,6 +106,13 @@ change what's stored on it:
   as pressing the advertise button on the device itself — a Flood advert
   is rebroadcast by other repeaters that hear it, using real mesh airtime.
   Manual only, never automatic.
+- **Forcing "auto-add contacts" on.** MeshHunter only ever learns about a
+  node via the device's own contact table (`NEW_CONTACT` pushes and
+  `get_contacts()` syncs) — it never adds contacts itself. If your
+  device's auto-add-contacts setting is off, it silently never adds
+  anything new to discover, so MeshHunter forces this setting **on** on
+  every connect. This is not optional/configurable, and it persists on
+  the device after you disconnect, like any other device setting change.
 
 MeshHunter never adds new contacts, changes device settings (name, radio
 parameters, channel keys), or sends chat/channel messages on your behalf.

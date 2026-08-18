@@ -163,6 +163,22 @@ class MeshCoreWorker:
         # into _resolve_sender_name/_resolve_channel_name, which need
         # self.meshcore) before that call even returns.
         self.meshcore = meshcore
+        # We only ever learn about new nodes via the device's own NEW_CONTACT
+        # pushes and get_contacts() syncs -- this app never calls
+        # add_contact() itself. Both of those are empty for anything the
+        # device hasn't already added to its own contact table, so if
+        # auto-add is off, node discovery silently stops working entirely.
+        # Force it on every connect rather than just warning, since a user
+        # has no way to notice "nothing new is showing up" is actually this
+        # setting rather than just a quiet mesh.
+        autoadd_result = await meshcore.commands.set_autoadd_config(1)
+        if autoadd_result.type == EventType.ERROR:
+            detail = autoadd_result.payload.get("code_string", autoadd_result.payload)
+            self.ui_queue.put((
+                "log",
+                f"-- Warning: could not enable auto-add-contacts on device ({detail}) -- "
+                "new nodes may not be discovered --",
+            ))
         await meshcore.start_auto_message_fetching()
 
         self.known_repeaters = load_known_nodes(REPEATERS_CSV_PATH)
