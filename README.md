@@ -35,12 +35,13 @@ to [WDGWars](https://wdgwars.pl) and/or a self-hosted ingest API.
 ```bash
 git clone https://github.com/Dagamant/MeshHunter.git
 cd MeshHunter
-./run.sh
+./run.sh        # Windows: run.bat
 ```
 
-`run.sh` creates a `venv/`, installs `requirements.txt` into it, and launches
-the app. On later runs it just launches — re-run `pip install -r
-requirements.txt` yourself after pulling changes that touch dependencies.
+`run.sh` (`run.bat` on Windows) creates a `venv/`, installs `requirements.txt`
+into it, and launches the app. On later runs it just launches — re-run `pip
+install -r requirements.txt` yourself after pulling changes that touch
+dependencies.
 
 ## Configuration
 
