@@ -1,9 +1,10 @@
 """Load/save the app's JSON config file."""
 
 import json
+import os
 
 from .constants import DEFAULT_INGEST_URL
-from .paths import CONFIG_PATH
+from .paths import CONFIG_DIR, CONFIG_PATH
 
 
 def load_config():
@@ -57,4 +58,17 @@ def load_raw_config():
 
 
 def save_config(config):
-    CONFIG_PATH.write_text(json.dumps(config, indent=2))
+    """Write config.json with 0600 permissions (it holds plaintext API keys).
+
+    Uses os.open with an explicit mode rather than Path.write_text so the
+    file is never briefly world-readable between creation and chmod, and
+    chmods unconditionally afterward to self-heal any pre-existing file
+    that was created before this restriction existed.
+    """
+    CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(CONFIG_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, json.dumps(config, indent=2).encode())
+    finally:
+        os.close(fd)
+    os.chmod(CONFIG_PATH, 0o600)

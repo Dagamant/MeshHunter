@@ -11,7 +11,7 @@ next-to-the-script location the first time the new location is used.
 import shutil
 from pathlib import Path
 
-from platformdirs import user_data_dir
+from platformdirs import user_config_dir, user_data_dir
 
 from .constants import CHAT_TYPE, ROOM_TYPE, SENSOR_TYPE
 
@@ -19,7 +19,12 @@ APP_NAME = "meshhunter"
 
 DATA_DIR = Path(user_data_dir(APP_NAME, appauthor=False))
 
-CONFIG_PATH = DATA_DIR / "config.json"
+# config.json holds plaintext API keys, so it gets its own per-user
+# directory (platformdirs' config dir, e.g. ~/.config/meshhunter on Linux)
+# rather than living alongside CSVs/logs in DATA_DIR, and save_config()
+# writes it with 0600 permissions.
+CONFIG_DIR = Path(user_config_dir(APP_NAME, appauthor=False))
+CONFIG_PATH = CONFIG_DIR / "config.json"
 REPEATERS_CSV_PATH = DATA_DIR / "repeaters.csv"
 CHAT_NODES_CSV_PATH = DATA_DIR / "chat_nodes.csv"
 ROOM_NODES_CSV_PATH = DATA_DIR / "room_nodes.csv"
@@ -65,15 +70,18 @@ def migrate_legacy_data():
     (for logging), empty if there was nothing to do.
     """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     migrated = []
     for name in _LEGACY_FILES:
-        new = DATA_DIR / name
+        new = CONFIG_PATH if name == "config.json" else DATA_DIR / name
         if new.exists():
             continue
         for legacy_dir in _LEGACY_DIRS:
             old = legacy_dir / name
             if old.exists():
                 shutil.copy2(old, new)
+                if new is CONFIG_PATH:
+                    new.chmod(0o600)
                 migrated.append(name)
                 break
 

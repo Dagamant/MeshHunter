@@ -38,9 +38,12 @@ requirements.txt` yourself after pulling changes that touch dependencies.
 
 ## Configuration
 
-Copy `example-config.json` to `config.json` in the project root (or edit the
-fields from the Settings dialog once the app is running — it writes back to
-the same file):
+`example-config.json` shows the available fields — edit them from the
+Settings dialog once the app is running (recommended), or write your own
+`config.json` directly into the app's per-OS user config directory (e.g.
+`~/.config/meshhunter/` on Linux, `~/Library/Application Support/meshhunter/`
+on macOS, `%LOCALAPPDATA%\meshhunter\meshhunter\` on Windows). It's created
+with `0600` permissions since it holds plaintext API keys.
 
 ```json
 {
