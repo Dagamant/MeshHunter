@@ -210,49 +210,67 @@ def send_to_ingest_api(records, url, api_key, ui_queue):
     return True
 
 
-def flush_pending_batch(config, ui_queue):
+def _node_csv_paths():
+    return [REPEATERS_CSV_PATH] + [spec[0] for spec in EXTRA_NODE_TYPES.values()]
+
+
+def flush_pending_wdgwars(config, ui_queue):
     """Load every known node from all four CSVs and send whatever's still
-    pending (per the uploaded_wdgwars/uploaded_ingest columns) to each
-    configured endpoint, marking rows done on success. Blocking HTTP calls
-    -- run in a background thread. Used by the "Send pending batch" button
-    regardless of whether batch mode is on, since it also serves as a
-    manual retry for anything an earlier immediate-mode attempt failed to
-    send (immediate mode never marks rows done, so a failed send just
-    leaves them pending here too).
+    pending (per the uploaded_wdgwars column) to WDGWars, marking rows done
+    on success. Blocking HTTP call -- run in a background thread. Used by
+    the "Send pending to WDGWars" button regardless of whether batch mode
+    is on, since it also serves as a manual retry for anything an earlier
+    immediate-mode attempt failed to send (immediate mode never marks rows
+    done, so a failed send just leaves them pending here too).
     """
-    csv_paths = [REPEATERS_CSV_PATH] + [spec[0] for spec in EXTRA_NODE_TYPES.values()]
+    if not config.get("api_key"):
+        ui_queue.put(("log", "-- WDGWars upload failed: no API key configured --"))
+        return
     sent_anything = False
-    for csv_path in csv_paths:
+    for csv_path in _node_csv_paths():
         rows = load_known_nodes(csv_path)
         if not rows:
             continue
-
-        if config.get("api_key"):
-            pending = {nid: r for nid, r in rows.items() if not r.get("uploaded_wdgwars")}
-            records = build_meshcore_records(pending) if pending else []
-            if records:
-                sent_anything = True
-                ui_queue.put(("log", f"-- Sending {len(records)} pending node(s) from {csv_path.name} to WDGWars --"))
-                if upload_to_wdgwars(records, config["api_key"], ui_queue):
-                    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    for rec in records:
-                        rows[rec["node_id"]]["uploaded_wdgwars"] = ts
-                    save_known_nodes(rows, csv_path)
-
-        if config.get("ingest_api_key") and config.get("ingest_url"):
-            pending = {nid: r for nid, r in rows.items() if not r.get("uploaded_ingest")}
-            records = build_ingest_records(pending) if pending else []
-            if records:
-                sent_anything = True
-                ui_queue.put(
-                    ("log", f"-- Sending {len(records)} pending node(s) from {csv_path.name} to Ingest API --")
-                )
-                if send_to_ingest_api(records, config["ingest_url"], config["ingest_api_key"], ui_queue):
-                    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    for rec in records:
-                        if "node_id" in rec:
-                            rows[rec["node_id"]]["uploaded_ingest"] = ts
-                    save_known_nodes(rows, csv_path)
+        pending = {nid: r for nid, r in rows.items() if not r.get("uploaded_wdgwars")}
+        records = build_meshcore_records(pending) if pending else []
+        if not records:
+            continue
+        sent_anything = True
+        ui_queue.put(("log", f"-- Sending {len(records)} pending node(s) from {csv_path.name} to WDGWars --"))
+        if upload_to_wdgwars(records, config["api_key"], ui_queue):
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for rec in records:
+                rows[rec["node_id"]]["uploaded_wdgwars"] = ts
+            save_known_nodes(rows, csv_path)
 
     if not sent_anything:
-        ui_queue.put(("log", "-- No pending nodes to send --"))
+        ui_queue.put(("log", "-- No pending nodes to send to WDGWars --"))
+
+
+def flush_pending_ingest(config, ui_queue):
+    """Same as flush_pending_wdgwars but for the generic ingest API, tracked
+    via the uploaded_ingest column. Used by the "Send pending to Ingest API"
+    button."""
+    if not config.get("ingest_api_key") or not config.get("ingest_url"):
+        ui_queue.put(("log", "-- Ingest API send failed: ingest not configured --"))
+        return
+    sent_anything = False
+    for csv_path in _node_csv_paths():
+        rows = load_known_nodes(csv_path)
+        if not rows:
+            continue
+        pending = {nid: r for nid, r in rows.items() if not r.get("uploaded_ingest")}
+        records = build_ingest_records(pending) if pending else []
+        if not records:
+            continue
+        sent_anything = True
+        ui_queue.put(("log", f"-- Sending {len(records)} pending node(s) from {csv_path.name} to Ingest API --"))
+        if send_to_ingest_api(records, config["ingest_url"], config["ingest_api_key"], ui_queue):
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for rec in records:
+                if "node_id" in rec:
+                    rows[rec["node_id"]]["uploaded_ingest"] = ts
+            save_known_nodes(rows, csv_path)
+
+    if not sent_anything:
+        ui_queue.put(("log", "-- No pending nodes to send to Ingest API --"))

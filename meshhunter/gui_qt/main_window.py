@@ -41,7 +41,7 @@ from ..core.devices import format_ble_entry, list_serial_ports, parse_device_sel
 from ..core.gps import GPSState, GPSWorker
 from ..core.logging_bridge import attach_library_logging
 from ..core.paths import SESSION_LOG_DIR
-from ..core.uploads import flush_pending_batch
+from ..core.uploads import flush_pending_ingest, flush_pending_wdgwars
 from ..core.worker import MeshCoreWorker
 from . import dialogs
 from .bridge import Bridge
@@ -100,7 +100,7 @@ class MainWindow(QMainWindow):
 
         self.connection_panel.set_devices(list_serial_ports() + self._ble_entries)
         self.connection_panel.set_device_selection(self.config_data.get("serial_device", ""))
-        self.sync_panel.set_send_pending_visible(self.config_data.get("batch_uploads", False))
+        self._update_send_pending_visibility()
 
         self._gps_display_timer = QTimer(self)
         self._gps_display_timer.timeout.connect(self._update_gps_display)
@@ -243,7 +243,8 @@ class MainWindow(QMainWindow):
         self.connection_panel.connect_clicked.connect(self._toggle_connection)
         self.advertise_panel.zero_hop_clicked.connect(lambda: self._send_advert(False))
         self.advertise_panel.flood_clicked.connect(lambda: self._send_advert(True))
-        self.sync_panel.send_pending_clicked.connect(self._send_pending_batch)
+        self.sync_panel.send_wdgwars_clicked.connect(self._send_pending_wdgwars)
+        self.sync_panel.send_ingest_clicked.connect(self._send_pending_ingest)
         self.sync_panel.clear_contacts_clicked.connect(self._clear_device_contacts)
 
         self.bridge.status.connect(self._on_status)
@@ -279,7 +280,7 @@ class MainWindow(QMainWindow):
         self._log_line("Config saved")
         if self.worker is not None:
             self.worker.apply_config(self.config_data)
-        self.sync_panel.set_send_pending_visible(self.config_data.get("batch_uploads", False))
+        self._update_send_pending_visibility()
         if (
             self.config_data.get("gps_port", "") != gps_port_before
             or self.config_data.get("gps_enabled", True) != gps_enabled_before
@@ -473,9 +474,18 @@ class MainWindow(QMainWindow):
         if self.worker is not None:
             self.worker.send_advert(flood)
 
-    def _send_pending_batch(self):
-        self._log_line("-- Sending pending batch... --")
-        threading.Thread(target=flush_pending_batch, args=(self.config_data, self.bridge), daemon=True).start()
+    def _update_send_pending_visibility(self):
+        batch_uploads = self.config_data.get("batch_uploads", False)
+        self.sync_panel.set_send_wdgwars_visible(batch_uploads)
+        self.sync_panel.set_send_ingest_visible(batch_uploads and self.ingest_configured)
+
+    def _send_pending_wdgwars(self):
+        self._log_line("-- Sending pending batch to WDGWars... --")
+        threading.Thread(target=flush_pending_wdgwars, args=(self.config_data, self.bridge), daemon=True).start()
+
+    def _send_pending_ingest(self):
+        self._log_line("-- Sending pending batch to Ingest API... --")
+        threading.Thread(target=flush_pending_ingest, args=(self.config_data, self.bridge), daemon=True).start()
 
     # ---- lifecycle ------------------------------------------------------
 

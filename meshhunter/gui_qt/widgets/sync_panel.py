@@ -8,7 +8,8 @@ from .stat_tile import StatTile
 
 
 class SyncPanel(QWidget):
-    send_pending_clicked = Signal()
+    send_wdgwars_clicked = Signal()
+    send_ingest_clicked = Signal()
     clear_contacts_clicked = Signal()
 
     def __init__(self, parent=None):
@@ -26,9 +27,13 @@ class SyncPanel(QWidget):
         tiles_row.addWidget(self.ingest_tile)
         layout.addLayout(tiles_row)
 
-        self.send_pending_button = make_button("Send pending batch", variant="secondary", height=32)
-        self.send_pending_button.clicked.connect(self.send_pending_clicked)
-        layout.addWidget(self.send_pending_button)
+        self.send_wdgwars_button = make_button("Send pending to WDGWars", variant="secondary", height=32)
+        self.send_wdgwars_button.clicked.connect(self.send_wdgwars_clicked)
+        layout.addWidget(self.send_wdgwars_button)
+
+        self.send_ingest_button = make_button("Send pending to Ingest API", variant="secondary", height=32)
+        self.send_ingest_button.clicked.connect(self.send_ingest_clicked)
+        layout.addWidget(self.send_ingest_button)
 
         self.clear_contacts_button = make_button("Clear device contacts", variant="danger", height=32)
         self.clear_contacts_button.setEnabled(False)
@@ -44,5 +49,8 @@ class SyncPanel(QWidget):
     def set_clear_contacts_enabled(self, enabled):
         self.clear_contacts_button.setEnabled(enabled)
 
-    def set_send_pending_visible(self, visible):
-        self.send_pending_button.setVisible(visible)
+    def set_send_wdgwars_visible(self, visible):
+        self.send_wdgwars_button.setVisible(visible)
+
+    def set_send_ingest_visible(self, visible):
+        self.send_ingest_button.setVisible(visible)
