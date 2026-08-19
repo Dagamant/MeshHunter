@@ -4,6 +4,12 @@
 
 # MeshHunter
 
+<p align="center">
+  <a href="https://ko-fi.com/dagamant">
+    <img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support me on Ko-fi">
+  </a>
+</p>
+
 A PySide6 desktop app for logging [MeshCore](https://meshcore.co.uk/) mesh
 network nodes. Connect to a MeshCore device over serial or BLE, and
 MeshHunter records every node it hears — repeaters, chat/companion nodes,
@@ -61,7 +67,7 @@ with `0600` permissions since it holds plaintext API keys.
 | `api_key` | Your WDGWars API key (from `wdgwars.pl/profile`) |
 | `auto_upload` | Upload newly-logged nodes to WDGWars as they're heard |
 | `auto_clear_contacts` | Remove a node from the device's contact table once it's safely logged, to free up space for new ones |
-| `batch_uploads` | Defer uploads to the "Send pending batch" button instead of sending immediately |
+| `batch_uploads` | Defer uploads to the "Send pending to WDGWars" / "Send pending to Ingest API" buttons instead of sending immediately |
 
 Two power-user sections only appear once you've added their keys to
 `config.json` at least once:
@@ -81,8 +87,8 @@ Two power-user sections only appear once you've added their keys to
    (`repeaters.csv`, `chat_nodes.csv`, `room_nodes.csv`, `sensor_nodes.csv`,
    plus `all_contacts.csv` for every contact regardless of GPS status).
 3. With `auto_upload` enabled and an API key set, newly-logged nodes upload
-   to WDGWars automatically. Otherwise, use **Send pending batch** to send
-   whatever's queued up.
+   to WDGWars automatically. Otherwise, use **Send pending to WDGWars** /
+   **Send pending to Ingest API** to send whatever's queued up.
 4. Open **Settings** for GPS, endpoint, and automation configuration.
 
 ## Data sent over each API
