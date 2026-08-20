@@ -468,8 +468,19 @@ class MeshCoreWorker:
         # empty/stale cache and remove nothing, despite the device holding
         # plenty of contacts. Force a fresh full sync first, through the
         # same lock _request_resync uses, so it can't race an in-flight one.
+        if self.meshcore is None:
+            # Scheduled via asyncio.ensure_future by clear_all_contacts(), so
+            # a disconnect can land between that call and this task actually
+            # starting to run.
+            return
         async with self._contacts_sync_lock:
             await self.meshcore.commands.get_contacts()
+        # A disconnect (user-initiated or device drop) can land at any await
+        # above or below -- _main sets self.meshcore = None without waiting
+        # on this task, so it's checked after every await point that could
+        # have yielded to it, rather than assumed to still be set.
+        if self.meshcore is None:
+            return
         targets = list(self.meshcore.contacts.values())
         self.ui_queue.put(("log", f"-- Removing {len(targets)} device contact(s) --"))
         # The get_contacts() above is itself a CONTACTS event that _on_contacts
@@ -478,9 +489,11 @@ class MeshCoreWorker:
         # removing the same contacts this loop is about to remove. Suppress
         # that path for the duration so the two don't race each other.
         self._bulk_clearing = True
+        removed = 0
         try:
-            removed = 0
             for c in targets:
+                if self.meshcore is None:
+                    break
                 ok, detail = await self._remove_contact(c)
                 if ok:
                     removed += 1
@@ -489,6 +502,12 @@ class MeshCoreWorker:
                     self.ui_queue.put(("log", f"-- Failed to remove {name}: {detail} --"))
         finally:
             self._bulk_clearing = False
+        if self.meshcore is None:
+            self.ui_queue.put((
+                "log",
+                f"-- Clear device contacts interrupted by disconnect after removing {removed}/{len(targets)} --",
+            ))
+            return
         self.ui_queue.put(("log", f"-- Removed {removed}/{len(targets)} contact(s) --"))
         await self.meshcore.commands.get_contacts()
 
