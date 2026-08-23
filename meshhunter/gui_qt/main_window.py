@@ -26,6 +26,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -39,6 +40,7 @@ from ..core.config import load_config, load_raw_config, save_config
 from ..core.constants import SERIAL_BAUD
 from ..core.devices import format_ble_entry, list_serial_ports, parse_device_selection, scan_ble_devices_sync
 from ..core.gps import GPSState, GPSWorker
+from ..core.json_import import import_contacts_json
 from ..core.logging_bridge import attach_library_logging
 from ..core.paths import SESSION_LOG_DIR
 from ..core.uploads import flush_pending_ingest, flush_pending_wdgwars
@@ -246,6 +248,7 @@ class MainWindow(QMainWindow):
         self.sync_panel.send_wdgwars_clicked.connect(self._send_pending_wdgwars)
         self.sync_panel.send_ingest_clicked.connect(self._send_pending_ingest)
         self.sync_panel.clear_contacts_clicked.connect(self._clear_device_contacts)
+        self.sync_panel.import_json_clicked.connect(self._import_contacts_json)
 
         self.bridge.status.connect(self._on_status)
         self.bridge.error.connect(self._on_error)
@@ -486,6 +489,13 @@ class MainWindow(QMainWindow):
     def _send_pending_ingest(self):
         self._log_line("-- Sending pending batch to Ingest API... --")
         threading.Thread(target=flush_pending_ingest, args=(self.config_data, self.bridge), daemon=True).start()
+
+    def _import_contacts_json(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Import contacts from JSON", "", "JSON files (*.json)")
+        if not path:
+            return
+        self._log_line(f"-- Importing contacts from {Path(path).name}... --")
+        threading.Thread(target=import_contacts_json, args=(path, self.bridge), daemon=True).start()
 
     # ---- lifecycle ------------------------------------------------------
 

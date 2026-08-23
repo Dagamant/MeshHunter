@@ -11,6 +11,7 @@ class SyncPanel(QWidget):
     send_wdgwars_clicked = Signal()
     send_ingest_clicked = Signal()
     clear_contacts_clicked = Signal()
+    import_json_clicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -34,6 +35,10 @@ class SyncPanel(QWidget):
         self.send_ingest_button = make_button("Send pending to Ingest API", variant="secondary", height=32)
         self.send_ingest_button.clicked.connect(self.send_ingest_clicked)
         layout.addWidget(self.send_ingest_button)
+
+        self.import_json_button = make_button("Import contacts from JSON...", variant="secondary", height=32)
+        self.import_json_button.clicked.connect(self.import_json_clicked)
+        layout.addWidget(self.import_json_button)
 
         self.clear_contacts_button = make_button("Clear device contacts", variant="danger", height=32)
         self.clear_contacts_button.setEnabled(False)
