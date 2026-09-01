@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication
 from ..core import ble_compat
 from ..core.paths import migrate_legacy_data
 from .main_window import MainWindow
+from .pocket_window import PocketMainWindow
 from .theme import STYLESHEET
 
 
@@ -32,7 +33,10 @@ def main():
     loop = qasync.QEventLoop(app)
     asyncio.set_event_loop(loop)
 
-    window = MainWindow()
+    # --pocket switches to a compact, touch-friendly layout for a fixed
+    # 640x480 display (see pocket_window.py) instead of the normal
+    # resizable desktop rail+content layout.
+    window = PocketMainWindow() if "--pocket" in sys.argv else MainWindow()
     if migrated:
         window._log_line(f"-- Migrated legacy data files: {', '.join(migrated)} --")
     window.show()

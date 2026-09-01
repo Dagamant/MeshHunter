@@ -212,4 +212,29 @@ QPlainTextEdit#terminal {{
     border: none;
     padding: 14px 16px;
 }}
+
+/* Used by PocketMainWindow's tabbed layout (no QTabWidget in the desktop
+   window), sized for touch rather than Qt's cursor-sized default tabs. */
+QTabWidget::pane {{
+    border-top: 1px solid {LINE};
+    background-color: {INK};
+}}
+
+QTabBar::tab {{
+    background-color: {PANEL};
+    color: {DIM};
+    padding: 10px 18px;
+    border: 1px solid {LINE_SOFT};
+    border-bottom: none;
+}}
+
+QTabBar::tab:selected {{
+    background-color: {INK};
+    color: {ACCENT};
+    border-color: {LINE};
+}}
+
+QTabBar::tab:!selected:hover {{
+    color: {TXT};
+}}
 """

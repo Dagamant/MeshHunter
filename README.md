@@ -24,6 +24,7 @@ to [WDGWars](https://wdgwars.pl) and/or a self-hosted ingest API.
 - Auto-upload to **WDGWars** and/or a self-hosted **wardriver ingest API**, immediate or batched
 - Send 0-hop/flood adverts and clear the device's stored contacts from the GUI
 - Full serial terminal log, saved to a session log file per connection
+- A compact, touch-friendly **pocket mode** (`--pocket`) for fixed 640×480 displays
 
 ## Requirements
 
@@ -92,6 +93,29 @@ Two power-user sections only appear once you've added their keys to
    **Send pending to Ingest API** to send whatever's queued up.
 4. Open **Settings** for GPS, endpoint, and automation configuration.
 
+## Pocket mode (640×480)
+
+```bash
+./run.sh --pocket        # or: venv/bin/python main.py --pocket
+```
+
+A compact, touch-friendly layout for small fixed displays (the
+"PocketTerm35" target), instead of the normal resizable desktop window.
+Same connection/upload/settings logic as the desktop app — only the
+layout changes: a slim top bar (connection status, LIVE indicator,
+Settings) plus three tabs sized for a finger instead of a mouse:
+
+- **Home** — device picker, Connect/Disconnect, and node counts (the
+  first thing you see)
+- **Terminal** — the same serial log as the desktop view
+- **Actions** — advertise, sync/upload, import contacts, clear device
+  contacts
+
+The window is fixed at 640×480 and doesn't resize. One current
+limitation: there's no room in the compact top bar for a live GPS fix
+readout, so it isn't shown in pocket mode — GPS still works and still
+tags logged nodes with your position, it's just not displayed on screen.
+
 ## Data sent over each API
 
 Both endpoints only ever receive **node data you've logged** (id, type,
@@ -159,9 +183,10 @@ chat/channel messages on your behalf.
 ## Project layout
 
 ```
-main.py                   entry point
-meshhunter/core/          MeshCore connection, uploads, config, storage
-meshhunter/gui_qt/        PySide6 GUI (main window, rail widgets, theme)
+main.py             entry point
+meshhunter/core/    MeshCore connection, uploads, config, storage
+meshhunter/gui_qt/  PySide6 GUI (main window, rail widgets, theme)
+  pocket_window.py  compact 640x480 layout, launched with --pocket
 ```
 
 ## License

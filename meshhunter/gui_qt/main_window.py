@@ -260,6 +260,13 @@ class MainWindow(QMainWindow):
 
     # ---- settings dialog --------------------------------------------------
 
+    def _settings_dialog_size(self):
+        """(width, height) to force the Settings dialog to, or None to let
+        it size itself (Qt's default sizeHint-based behavior). Overridden
+        by PocketMainWindow, which runs on a fixed small display where the
+        dialog's natural size wouldn't fit on screen at all."""
+        return None
+
     def _open_settings_dialog(self):
         dialog = SettingsDialog(
             self.config_data,
@@ -268,6 +275,9 @@ class MainWindow(QMainWindow):
             self.ingest_configured,
             parent=self,
         )
+        size = self._settings_dialog_size()
+        if size is not None:
+            dialog.resize(*size)
         self._settings_dialog = dialog
         try:
             if dialog.exec() == QDialog.Accepted:
