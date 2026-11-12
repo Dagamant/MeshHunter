@@ -8,6 +8,7 @@ OS thread. GPSWorker is unaffected -- it's still a real thread either way.
 
 import asyncio
 import sys
+from pathlib import Path
 
 import qasync
 from PySide6.QtWidgets import QApplication
@@ -15,7 +16,19 @@ from PySide6.QtWidgets import QApplication
 from ..core import ble_compat
 from ..core.paths import migrate_legacy_data
 from .main_window import MainWindow
+from .pocket_window import PocketWindow
 from .theme import STYLESHEET
+
+
+# The LoRa HAT's SX1262 (spi1-1cs overlay). Its presence means this is a
+# HAT device, which gets the fullscreen touch UI unless --desktop is given.
+HAT_SPIDEV = Path("/dev/spidev1.0")
+
+
+def _use_pocket_ui(argv):
+    if "--desktop" in argv:
+        return False
+    return "--pocket" in argv or (sys.platform.startswith("linux") and HAT_SPIDEV.exists())
 
 
 def main():
@@ -32,10 +45,14 @@ def main():
     loop = qasync.QEventLoop(app)
     asyncio.set_event_loop(loop)
 
-    window = MainWindow()
-    if migrated:
-        window._log_line(f"-- Migrated legacy data files: {', '.join(migrated)} --")
-    window.show()
+    if _use_pocket_ui(sys.argv):
+        window = PocketWindow()
+        window.showFullScreen()
+    else:
+        window = MainWindow()
+        if migrated:
+            window._log_line(f"-- Migrated legacy data files: {', '.join(migrated)} --")
+        window.show()
 
     with loop:
         loop.run_forever()

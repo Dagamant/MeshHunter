@@ -6,12 +6,50 @@ import os
 from .constants import DEFAULT_INGEST_URL
 from .paths import CONFIG_DIR, CONFIG_PATH
 
+# LoRa HAT (SX1262 + RTL-SDR) settings. Kept separate from the companion
+# device fields below since they're edited from their own rail panel and
+# only matter on Linux with the HAT fitted.
+HAT_DEFAULTS = {
+    "mode": "companion",  # "companion" (MeshCore device) or "hat" (LoRa HAT)
+    "lora_network": "MeshCore",
+    "meshcore_preset": "USA/Canada",
+    "meshcore_freq": 910.525,
+    "meshcore_bw": 62.5,
+    "meshcore_sf": 7,
+    "meshcore_cr": 5,
+    "meshcore_channels": [],  # extra "#hashtag" channels to decrypt
+    "meshtastic_region": "US",
+    "meshtastic_preset": "LongFast",
+    "sdr_sample_rate": 2_400_000,
+    "sdr_gain": None,  # None = tuner AGC, else dB
+    # Pocket UI "Custom" option: user-entered radio settings + decoder
+    "custom_decode": "Capture",  # "MeshCore", "Meshtastic" or "Capture"
+    "custom_freq": 915.0,
+    "custom_bw": 125.0,
+    "custom_sf": 9,
+    "custom_cr": 5,
+    "custom_sync": 0x12,
+    "custom_channel": "LongFast",  # Meshtastic channel name (hash + default key)
+    # Pocket (touch) UI logging checkboxes
+    "log_packets": True,  # every packet -> lora_packets.csv
+    "log_nodes": True,  # MeshCore adverts -> node CSVs (+ uploads, if enabled)
+    "log_gps": True,  # tag packets/nodes with our GPS position
+    "log_session": False,  # human-readable session log in logs/
+}
+
+
+def _with_hat_defaults(config, data):
+    for key, default in HAT_DEFAULTS.items():
+        value = data.get(key, default)
+        config[key] = list(value) if isinstance(default, list) else value
+    return config
+
 
 def load_config():
     if CONFIG_PATH.exists():
         try:
             data = json.loads(CONFIG_PATH.read_text())
-            return {
+            return _with_hat_defaults({
                 "serial_device": data.get("serial_device", ""),
                 "api_key": data.get("api_key", ""),
                 "auto_upload": bool(data.get("auto_upload", False)),
@@ -22,10 +60,10 @@ def load_config():
                 "gps_port": data.get("gps_port", ""),
                 "gps_enabled": bool(data.get("gps_enabled", True)),
                 "batch_uploads": bool(data.get("batch_uploads", False)),
-            }
+            }, data)
         except (json.JSONDecodeError, OSError):
             pass
-    return {
+    return _with_hat_defaults({
         "serial_device": "",
         "api_key": "",
         "auto_upload": False,
@@ -36,7 +74,7 @@ def load_config():
         "gps_port": "",
         "gps_enabled": True,
         "batch_uploads": False,
-    }
+    }, {})
 
 
 def load_raw_config():
