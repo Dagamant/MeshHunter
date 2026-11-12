@@ -24,11 +24,62 @@ to [WDGWars](https://wdgwars.pl) and/or a self-hosted ingest API.
 - Auto-upload to **WDGWars** and/or a self-hosted **wardriver ingest API**, immediate or batched
 - Send 0-hop/flood adverts and clear the device's stored contacts from the GUI
 - Full serial terminal log, saved to a session log file per connection
+- **LoRa HAT mode** (Raspberry Pi + [HackerGadgets RTL-SDR/LoRa/GPS/RTC HAT](https://hackergadgets.com/products/rtl-sdr-lora-gps-rtc-hat-for-raspberry-pi)):
+  listen directly with the HAT's SX1262 for **MeshCore** or **Meshtastic**
+  (LongFast / MediumFast) traffic, decode it, and watch a live RTL-SDR
+  waterfall of the mesh frequency side by side
 
 ## Requirements
 
 - Python 3.11+ (developed against 3.13)
-- A MeshCore-compatible device reachable over serial or BLE
+- A MeshCore-compatible device reachable over serial or BLE, **or** the LoRa HAT (Linux only)
+
+## LoRa HAT mode
+
+Pick **LoRa HAT** under MODE in the rail, choose MeshCore (preset or custom
+frequency/SF/BW/CR) or Meshtastic (region + LongFast/MediumFast), and press
+**Start listening**. The window splits into decoded packets (top) and the
+RTL-SDR waterfall (bottom) with the LoRa channel highlighted. Changing the
+network or preset while listening retunes immediately. Receive only -- the
+radio is never put into transmit.
+
+What's decoded:
+
+- **MeshCore**: route/hops, adverts (name, type, position), and Public-channel
+  messages (add `"meshcore_channels": ["#yourchannel"]` to `config.json` to also
+  decrypt hashtag channels). DMs are end-to-end encrypted and shown as such.
+- **Meshtastic**: messages, positions, node info and telemetry on the preset's
+  default channel/key. Packets on other channels or PKI DMs are listed as encrypted.
+
+Every packet is appended to `lora_packets.csv` in the data directory together
+with your GPS position, and MeshCore adverts with coordinates go into the same
+node CSVs as companion mode.
+
+### Touch UI
+
+When the HAT is detected (`/dev/spidev1.0` exists), MeshHunter launches a
+fullscreen touch UI sized for small 640x480 screens such as the PocketTerm35:
+a setup screen with one button each for MeshCore, Meshtastic LongFast and
+Meshtastic MediumFast plus logging checkboxes, then a live screen where decoded
+packets and the waterfall fill the display (**Options** returns to setup).
+A fourth **Custom** button opens a settings screen for your own frequency,
+bandwidth, SF, CR and sync word, decoded as MeshCore, Meshtastic (with a
+channel name of your choice), or **Packet Capture** -- raw hex of every frame,
+CRC failures included.
+Force either UI with `./run.sh --pocket` or `./run.sh --desktop`.
+
+One-time Raspberry Pi setup (from the HAT's guide; reboot afterwards):
+
+```ini
+# /boot/firmware/config.txt
+dtoverlay=spi1-1cs   # SX1262 on /dev/spidev1.0
+dtparam=uart0=on     # GPS on /dev/ttyAMA0 (Pi 5; /dev/ttyS0 + enable_uart=1 on Pi 4)
+```
+
+Remove `console=serial0,115200` from `/boot/firmware/cmdline.txt`, blacklist the
+DVB driver (`echo 'blacklist dvb_usb_rtl28xxu' | sudo tee /etc/modprobe.d/blacklist-rtl.conf`),
+install `librtlsdr0` (`sudo apt install rtl-sdr`), and set the GPS port to
+`/dev/ttyAMA0` in Settings.
 
 ## Setup
 

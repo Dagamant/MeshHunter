@@ -181,9 +181,20 @@ class MeshCoreWorker:
             ))
         await meshcore.start_auto_message_fetching()
 
+        self.ui_queue.put(("status", f"Connected to {target}"))
+        self.load_known_nodes()
+
+        await self._stop_event.wait()
+
+        self.meshcore = None
+        await meshcore.stop_auto_message_fetching()
+        await meshcore.disconnect()
+        self.ui_queue.put(("status", "Disconnected"))
+
+    def load_known_nodes(self):
+        """(Re)load every node CSV into memory and report the counts."""
         self.known_repeaters = load_known_nodes(REPEATERS_CSV_PATH)
         self.known_all_contacts = load_all_contacts(ALL_CONTACTS_CSV_PATH)
-        self.ui_queue.put(("status", f"Connected to {target}"))
         self.ui_queue.put(("log", f"-- Logging full contact list (any type, GPS or not) to {ALL_CONTACTS_CSV_PATH} --"))
         self.ui_queue.put(("log", f"-- Logging heard repeaters with coordinates to {REPEATERS_CSV_PATH} --"))
         initial_nodes = {REPEATER_TYPE: len(self.known_repeaters)}
@@ -193,12 +204,13 @@ class MeshCoreWorker:
             self.ui_queue.put(("log", f"-- Logging {log_label}s with coordinates to {csv_path} --"))
         self.ui_queue.put(("nodes", initial_nodes))
 
-        await self._stop_event.wait()
-
-        self.meshcore = None
-        await meshcore.stop_auto_message_fetching()
-        await meshcore.disconnect()
-        self.ui_queue.put(("status", "Disconnected"))
+    async def record_advert(self, contact):
+        """Record a contact-shaped dict for an advert heard over the air by
+        the LoRa HAT (see lora_decode._decode_mc_advert) -- same path a
+        device NEW_CONTACT push takes, minus the device resync."""
+        self._record_all_contacts([contact])
+        await self._record_contact(contact)
+        self._push_node_display()
 
     def _known_dict(self, node_type):
         return self.known_repeaters if node_type == REPEATER_TYPE else self.known_extra_nodes[node_type]
@@ -343,7 +355,9 @@ class MeshCoreWorker:
             row["last_heard"] = now
         save_known_nodes(known_nodes, csv_path)
 
-        if self.auto_clear_contacts and not self._bulk_clearing:
+        # meshcore is None when this worker is only recording adverts heard
+        # by the LoRa HAT -- there's no device contact table to clear.
+        if self.auto_clear_contacts and not self._bulk_clearing and self.meshcore is not None:
             # Once a node is safely persisted to our CSV, its device-side
             # contact slot isn't needed anymore -- removing it here keeps
             # the device's (limited) contact table free for discovering

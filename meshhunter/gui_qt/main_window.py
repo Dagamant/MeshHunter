@@ -18,6 +18,8 @@ sync) and status/indicators that need to update continuously while the
 dialog is closed.
 """
 
+import asyncio
+import sys
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -31,7 +33,10 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QComboBox,
     QScrollArea,
+    QSplitter,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -42,7 +47,9 @@ from ..core.devices import format_ble_entry, list_serial_ports, parse_device_sel
 from ..core.gps import GPSState, GPSWorker
 from ..core.json_import import import_contacts_json
 from ..core.logging_bridge import attach_library_logging
-from ..core.paths import SESSION_LOG_DIR
+from ..core.lora_worker import LoRaWorker, radio_settings_from_config
+from ..core.paths import LORA_PACKETS_CSV_PATH, SESSION_LOG_DIR
+from ..core.rtlsdr import WaterfallWorker
 from ..core.uploads import flush_pending_ingest, flush_pending_wdgwars
 from ..core.worker import MeshCoreWorker
 from . import dialogs
@@ -51,11 +58,15 @@ from .settings_dialog import SettingsDialog
 from .theme import ACCENT, DIM, LOGO_PATH, RAIL_WIDTH, pick_mono_font
 from .widgets.advertise_panel import AdvertisePanel
 from .widgets.common import make_button
+from .widgets.common import section_label
 from .widgets.connection_panel import ConnectionPanel
+from .widgets.hat_panel import HatPanel
 from .widgets.live_pill import LivePill
 from .widgets.node_panel import NodePanel
+from .widgets.packet_table import PacketTable
 from .widgets.sync_panel import SyncPanel
 from .widgets.terminal_log import TerminalLog
+from .widgets.waterfall import WaterfallView
 
 # Optional/power-user config keys -- not part of example-config.json's
 # standard set, so their settings-dialog sections (and this main-window GPS
@@ -63,6 +74,11 @@ from .widgets.terminal_log import TerminalLog
 # config.json at least once.
 _GPS_KEYS = ("gps_port", "gps_enabled")
 _INGEST_KEYS = ("ingest_url", "ingest_api_key", "ingest_auto_send")
+
+# The LoRa HAT (SX1262 on SPI + RTL-SDR) is driven through Linux spidev/
+# gpiod, so its mode is only offered there.
+HAT_SUPPORTED = sys.platform.startswith("linux")
+_MODES = (("companion", "Companion device"), ("hat", "LoRa HAT"))
 
 
 class MainWindow(QMainWindow):
@@ -74,6 +90,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(760, 560)
 
         self.config_data = load_config()
+        if self.config_data["lora_network"] not in ("MeshCore", "Meshtastic"):
+            self.config_data["lora_network"] = "MeshCore"  # e.g. the touch UI's "Custom"
         raw_config = load_raw_config()
         self.gps_configured = any(key in raw_config for key in _GPS_KEYS)
         self.ingest_configured = any(key in raw_config for key in _INGEST_KEYS)
@@ -96,6 +114,13 @@ class MainWindow(QMainWindow):
         self.gps_state = GPSState()
         self.gps_worker = None
 
+        # LoRa HAT: receiver + waterfall threads, and a device-less
+        # MeshCoreWorker used only to log adverts the HAT hears into the
+        # same node CSVs a companion device would.
+        self.lora_worker = None
+        self.waterfall_worker = None
+        self._hat_recorder = None
+
         self._build_shortcuts()
         self._build_widgets()
         self._wire_signals()
@@ -103,6 +128,9 @@ class MainWindow(QMainWindow):
         self.connection_panel.set_devices(list_serial_ports() + self._ble_entries)
         self.connection_panel.set_device_selection(self.config_data.get("serial_device", ""))
         self._update_send_pending_visibility()
+        self.hat_panel.set_values(self.config_data)
+        self.waterfall_view.set_sdr_values(self.config_data["sdr_sample_rate"], self.config_data["sdr_gain"])
+        self._set_mode(self.config_data.get("mode", "companion") if HAT_SUPPORTED else "companion")
 
         self._gps_display_timer = QTimer(self)
         self._gps_display_timer.timeout.connect(self._update_gps_display)
@@ -137,8 +165,20 @@ class MainWindow(QMainWindow):
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
 
+        # Companion mode shows the serial terminal; LoRa HAT mode splits
+        # the same space between decoded packets and the SDR waterfall.
+        self.content_stack = QStackedWidget()
         self.terminal_log = TerminalLog()
-        content_layout.addWidget(self.terminal_log, stretch=1)
+        self.content_stack.addWidget(self.terminal_log)
+        self.hat_splitter = QSplitter(Qt.Vertical)
+        self.hat_splitter.setChildrenCollapsible(False)
+        self.packet_table = PacketTable()
+        self.waterfall_view = WaterfallView()
+        self.hat_splitter.addWidget(self.packet_table)
+        self.hat_splitter.addWidget(self.waterfall_view)
+        self.hat_splitter.setSizes([1, 1])
+        self.content_stack.addWidget(self.hat_splitter)
+        content_layout.addWidget(self.content_stack, stretch=1)
 
         self.node_panel = NodePanel()
         content_layout.addWidget(self.node_panel)
@@ -159,6 +199,22 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
 
         layout.addWidget(self._build_brand_header())
+
+        self.mode_block = QWidget()
+        mode_layout = QVBoxLayout(self.mode_block)
+        mode_layout.setContentsMargins(16, 14, 16, 0)
+        mode_layout.setSpacing(11)
+        mode_layout.addWidget(section_label("MODE"))
+        self.mode_combo = QComboBox()
+        self.mode_combo.setMinimumHeight(34)
+        for key, label in _MODES:
+            self.mode_combo.addItem(label, key)
+        mode_layout.addWidget(self.mode_combo)
+        self.mode_block.setVisible(HAT_SUPPORTED)
+        layout.addWidget(self.mode_block)
+
+        self.hat_panel = HatPanel()
+        layout.addWidget(self.hat_panel)
 
         self.connection_panel = ConnectionPanel()
         layout.addWidget(self.connection_panel)
@@ -249,6 +305,10 @@ class MainWindow(QMainWindow):
         self.sync_panel.send_ingest_clicked.connect(self._send_pending_ingest)
         self.sync_panel.clear_contacts_clicked.connect(self._clear_device_contacts)
         self.sync_panel.import_json_clicked.connect(self._import_contacts_json)
+        self.mode_combo.currentIndexChanged.connect(lambda _: self._set_mode(self.mode_combo.currentData()))
+        self.hat_panel.start_clicked.connect(self._toggle_hat)
+        self.hat_panel.settings_changed.connect(self._on_hat_settings_changed)
+        self.waterfall_view.sdr_settings_changed.connect(self._on_sdr_settings_changed)
 
         self.bridge.status.connect(self._on_status)
         self.bridge.error.connect(self._on_error)
@@ -257,6 +317,11 @@ class MainWindow(QMainWindow):
         self.bridge.log.connect(self._log_line)
         self.bridge.wdgwars_sent.connect(self._on_wdgwars_sent)
         self.bridge.ingest_sent.connect(self._on_ingest_sent)
+        self.bridge.hat_packet.connect(self._on_hat_packet)
+        self.bridge.hat_status.connect(self._on_hat_status)
+        self.bridge.hat_error.connect(self._on_hat_error)
+        self.bridge.waterfall_row.connect(self.waterfall_view.canvas.add_row)
+        self.bridge.waterfall_error.connect(self._on_waterfall_error)
 
     # ---- settings dialog --------------------------------------------------
 
@@ -283,6 +348,8 @@ class MainWindow(QMainWindow):
         self._log_line("Config saved")
         if self.worker is not None:
             self.worker.apply_config(self.config_data)
+        if self._hat_recorder is not None:
+            self._hat_recorder.apply_config(self.config_data)
         self._update_send_pending_visibility()
         if (
             self.config_data.get("gps_port", "") != gps_port_before
@@ -497,9 +564,136 @@ class MainWindow(QMainWindow):
         self._log_line(f"-- Importing contacts from {Path(path).name}... --")
         threading.Thread(target=import_contacts_json, args=(path, self.bridge), daemon=True).start()
 
+    # ---- LoRa HAT -----------------------------------------------------------
+
+    def _set_mode(self, mode):
+        hat = mode == "hat"
+        index = next(i for i, (key, _) in enumerate(_MODES) if key == mode)
+        if self.mode_combo.currentIndex() != index:
+            self.mode_combo.blockSignals(True)
+            self.mode_combo.setCurrentIndex(index)
+            self.mode_combo.blockSignals(False)
+        self.hat_panel.setVisible(hat)
+        self.connection_panel.setVisible(not hat)
+        self.advertise_panel.setVisible(not hat)
+        self.content_stack.setCurrentIndex(1 if hat else 0)
+        if not hat:
+            self._stop_hat()
+        if self.config_data.get("mode") != mode:
+            self.config_data["mode"] = mode
+            save_config(self.config_data)
+
+    def _toggle_hat(self):
+        if self.lora_worker is None:
+            self._start_hat()
+        else:
+            self._stop_hat()
+
+    def _start_hat(self):
+        settings = radio_settings_from_config(self.config_data)
+        if self.session_log_file is None:
+            self._open_session_log("lora_hat")
+        self._log_line(f"-- Starting LoRa HAT: {settings.label} --")
+        self._log_line(f"-- Logging every received packet to {LORA_PACKETS_CSV_PATH} --")
+        if self._hat_recorder is None:
+            self._hat_recorder = MeshCoreWorker(None, self.bridge, gps_state=self.gps_state)
+            self._hat_recorder.apply_config(self.config_data)
+        self._hat_recorder.load_known_nodes()
+
+        self.lora_worker = LoRaWorker(settings, self.bridge, self.gps_state)
+        self.lora_worker.start()
+        self._start_waterfall(settings)
+        self.hat_panel.set_running(True)
+        self.packet_table.set_status(f"starting · {settings.label}", active=True)
+        self.live_pill.set_connected(True)
+
+    def _start_waterfall(self, settings):
+        if self.waterfall_worker is not None:
+            self.waterfall_worker.stop()
+            self.waterfall_worker.join(timeout=2)
+        center_hz = int(settings.freq_mhz * 1e6)
+        sample_rate = self.waterfall_view.sample_rate()
+        self.waterfall_view.canvas.configure(center_hz, sample_rate, settings.bw_khz * 1e3)
+        self.waterfall_worker = WaterfallWorker(
+            center_hz,
+            sample_rate,
+            on_row=self.bridge.waterfall_row.emit,
+            on_error=self.bridge.waterfall_error.emit,
+            gain_db=self.waterfall_view.gain_db(),
+        )
+        self.waterfall_worker.start()
+        self.waterfall_view.set_status(f"RTL-SDR · {settings.freq_mhz:.3f} MHz ± {sample_rate / 2e6:.1f}", active=True)
+
+    def _stop_hat(self):
+        # Joined (briefly -- each loop iteration is <= 0.5 s) rather than
+        # fire-and-forget: a retune starts a new worker straight after, and
+        # it can't open the SX1262 GPIO lines / RTL-SDR until the old one
+        # has let go of them.
+        if self.lora_worker is not None:
+            self.lora_worker.stop()
+            self.lora_worker.join(timeout=2)
+            self.lora_worker = None
+        if self.waterfall_worker is not None:
+            self.waterfall_worker.stop()
+            self.waterfall_worker.join(timeout=2)
+            self.waterfall_worker = None
+            self.waterfall_view.set_status("RTL-SDR idle")
+        self.hat_panel.set_running(False)
+        self.packet_table.set_status("stopped")
+        if self.worker is None:
+            self.live_pill.set_connected(False)
+
+    def _on_hat_settings_changed(self):
+        self.config_data.update(self.hat_panel.values())
+        save_config(self.config_data)
+        if self.lora_worker is not None:
+            # The SX1262 can only listen on one network/frequency at a
+            # time, so a settings change means a fresh receiver.
+            self._stop_hat()
+            self._start_hat()
+
+    def _on_sdr_settings_changed(self):
+        self.config_data["sdr_sample_rate"] = self.waterfall_view.sample_rate()
+        self.config_data["sdr_gain"] = self.waterfall_view.gain_db()
+        save_config(self.config_data)
+        if self.waterfall_worker is not None:
+            self._start_waterfall(radio_settings_from_config(self.config_data))
+
+    def _on_hat_packet(self, ev):
+        self.packet_table.add_event(ev)
+        p = ev.packet
+        signal = f"rssi={ev.rssi:.0f} snr={ev.snr:+.1f}"
+        self._log_line(f"[{ev.time:%H:%M:%S}] RX {p.network} {p.kind}: {signal} from={p.sender!r} {p.text} ({p.hops})")
+        if ev.crc_ok and p.network == "MeshCore" and p.kind == "ADVERT" and p.node:
+            # Prefer the live companion worker when one is connected, so
+            # both paths share one in-memory copy of the node CSVs.
+            recorder = self.worker if self.worker is not None and self.worker.meshcore is not None else self._hat_recorder
+            if recorder is not None:
+                asyncio.ensure_future(recorder.record_advert(p.node))
+
+    def _on_hat_status(self, payload):
+        self._log_line(f"-- LoRa HAT: {payload} --")
+        # "Stopped" can arrive (queued) after a retune has already started
+        # the next worker, so it's only logged, not shown as current status.
+        if self.lora_worker is not None and payload != "Stopped":
+            self.packet_table.set_status(payload, active=True)
+
+    def _on_hat_error(self, payload):
+        self._log_line(f"-- LoRa HAT error: {payload} --")
+        self.packet_table.set_status(f"error: {payload}")
+        if self.lora_worker is not None:
+            self.lora_worker = None
+            self.hat_panel.set_running(False)
+
+    def _on_waterfall_error(self, payload):
+        self._log_line(f"-- RTL-SDR error: {payload} --")
+        self.waterfall_view.set_status(f"RTL-SDR error: {payload}")
+        self.waterfall_worker = None
+
     # ---- lifecycle ------------------------------------------------------
 
     def closeEvent(self, event):
+        self._stop_hat()
         if self.worker is not None:
             self.worker.stop()
         if self.gps_worker is not None:

@@ -32,6 +32,12 @@ class Bridge(QObject):
     log = Signal(str)
     wdgwars_sent = Signal(int)
     ingest_sent = Signal(int)
+    # LoRa HAT (LoRaWorker / WaterfallWorker threads)
+    hat_packet = Signal(object)
+    hat_status = Signal(str)
+    hat_error = Signal(str)
+    waterfall_row = Signal(object)
+    waterfall_error = Signal(str)
 
     def put(self, item):
         """queue.Queue-compatible sink: put((kind, payload))."""

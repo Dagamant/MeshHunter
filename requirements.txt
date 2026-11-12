@@ -5,3 +5,7 @@ pynmea2==1.19.0
 platformdirs>=4.0
 PySide6==6.11.1
 qasync==0.28.0
+numpy==2.5.4
+pycryptodome==3.23.0
+spidev==3.8; sys_platform == "linux"
+gpiod==2.6.0; sys_platform == "linux"
