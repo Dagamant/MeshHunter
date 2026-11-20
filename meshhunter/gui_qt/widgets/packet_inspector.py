@@ -8,6 +8,8 @@ rebuilt from scratch on each show_message(), which only happens on a
 selection change or when the selected row folds in another copy.
 """
 
+import json
+
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QLinearGradient, QPainter
 from PySide6.QtWidgets import (
@@ -25,6 +27,8 @@ from PySide6.QtWidgets import (
 
 from ...core.messages import MESH_LABELS, channel_text, from_text
 from ..theme import (
+    LINE,
+    PANEL,
     ACCENT,
     ACCENT_DIM,
     ACCENT_LIGHT,
@@ -38,9 +42,11 @@ from ..theme import (
     TXT,
     pick_mono_font,
 )
+from .common import make_button
 from .stat_tile import StatTile
 
 WIDTH = 340
+OVERLAY_WIDTH = 300
 SCALE_LO, SCALE_HI = -110.0, -30.0
 MESH_COLORS = {"meshcore": MESH_MESHCORE, "meshtastic": MESH_MESHTASTIC}
 MESH_SHORT = {"meshcore": "MC", "meshtastic": "MT"}
@@ -179,14 +185,43 @@ class MiniBar(QWidget):
             p.drawRoundedRect(QRectF(0, 0, _frac(self.rssi) * self.width(), 4), 2, 2)
 
 
-def hex_dump_html(raw_hex):
+def hex_dump_html(raw_hex, per_line=16):
     data = bytes.fromhex(raw_hex) if raw_hex else b""
     lines = []
-    for off in range(0, len(data), 16):
-        chunk = " ".join(f"{b:02x}" for b in data[off:off + 16])
+    for off in range(0, len(data), per_line):
+        chunk = " ".join(f"{b:02x}" for b in data[off:off + per_line])
         lines.append(f"<span style='color:{ACCENT_DIM}'>{off:04x}</span>&nbsp;&nbsp;"
                      f"<span style='color:{LOG_PATH}'>{chunk}</span>")
     return "<br>".join(lines)
+
+
+class OverlayShadow(QWidget):
+    """Soft shadow painted behind the floating inspector (a sibling widget:
+    QGraphicsDropShadowEffect on a scrolling panel repaints stale content
+    and is slow). Approximates `0 12px 40px rgba(0,0,0,.7)`."""
+
+    BLUR = 24
+    OFFSET_Y = 12
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    def follow(self, rect):
+        b = self.BLUR
+        self.setGeometry(rect.adjusted(-b, -b + self.OFFSET_Y, b, b + self.OFFSET_Y))
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        b = self.BLUR
+        inner = QRectF(self.rect()).adjusted(b, b, -b, -b)
+        steps = 12
+        for k in range(steps):
+            grow = b * (1 - k / steps)
+            p.setBrush(QColor(0, 0, 0, int(178 / steps * 1.4)))
+            p.drawRoundedRect(inner.adjusted(-grow, -grow, grow, grow), 10 + grow, 10 + grow)
 
 
 class PacketInspector(QFrame):
@@ -232,6 +267,56 @@ class PacketInspector(QFrame):
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         outer.addWidget(self.scroll, stretch=1)
         self.body = None
+        self._outer = outer
+
+        # Overlay mode (small window): decoded fields + raw hex sit behind
+        # "Raw hex", and "Copy JSON" copies the whole message.
+        self._overlay = False
+        self._details_open = False
+        self.footer = QFrame()
+        self.footer.setObjectName("inspectorFooter")
+        frow = QHBoxLayout(self.footer)
+        frow.setContentsMargins(10, 8, 10, 10)
+        frow.setSpacing(8)
+        self.raw_button = make_button("Raw hex", variant="secondary", height=28)
+        self.raw_button.setCheckable(True)
+        self.raw_button.toggled.connect(self._toggle_details)
+        json_button = make_button("Copy JSON", variant="secondary", height=28)
+        json_button.clicked.connect(self._copy_json)
+        for btn in (self.raw_button, json_button):
+            btn.setFixedHeight(28)
+            btn.setStyleSheet("font-size: 11px;")
+            frow.addWidget(btn, stretch=1)
+        self.footer.setVisible(False)
+        outer.addWidget(self.footer)
+
+    def set_overlay(self, overlay):
+        """Floating 300 px panel over the message table (small window)
+        instead of a docked 340 px column."""
+        self._overlay = overlay
+        self.setFixedWidth(OVERLAY_WIDTH if overlay else WIDTH)
+        self.footer.setVisible(overlay)
+        if overlay:
+            self._outer.setContentsMargins(1, 1, 1, 1)
+            self.setStyleSheet(f"#packetInspector {{ border: 1px solid {LINE}; border-radius: 10px; }}"
+                               f" #inspectorHeader {{ border-top-left-radius: 10px;"
+                               f" border-top-right-radius: 10px; }}"
+                               f" #inspectorFooter {{ background: {PANEL}; border-bottom-left-radius: 10px;"
+                               f" border-bottom-right-radius: 10px; }}")
+        else:
+            self._outer.setContentsMargins(1, 0, 0, 0)
+            self.setStyleSheet("")
+        if self._message is not None:
+            self.refresh(self._message)
+
+    def _toggle_details(self, on):
+        self._details_open = on
+        if self._message is not None:
+            self.refresh(self._message)
+
+    def _copy_json(self):
+        if self._message is not None:
+            QGuiApplication.clipboard().setText(json.dumps(self._message, indent=2, default=str))
 
     # ---- content ----------------------------------------------------------
 
@@ -257,9 +342,10 @@ class PacketInspector(QFrame):
             lay.addLayout(self._path(m))
         if len(m.get("copies") or []) > 0:
             lay.addLayout(self._copies(m))
-        lay.addLayout(self._decoded(m))
-        if m.get("raw_hex"):
-            lay.addLayout(self._raw(m))
+        if not self._overlay or self._details_open:
+            lay.addLayout(self._decoded(m))
+            if m.get("raw_hex"):
+                lay.addLayout(self._raw(m))
         lay.addStretch(1)
         old = self.scroll.takeWidget()
         if old is not None:
@@ -420,7 +506,7 @@ class PacketInspector(QFrame):
         copy.clicked.connect(lambda: QGuiApplication.clipboard().setText(m.get("raw_hex", "")))
         n = len(m.get("raw_hex", "")) // 2
         col = self._section(f"RAW · {n} B", copy)
-        dump = QLabel(hex_dump_html(m.get("raw_hex", "")))
+        dump = QLabel(hex_dump_html(m.get("raw_hex", ""), 8 if self._overlay else 16))
         dump.setTextFormat(Qt.RichText)
         dump.setTextInteractionFlags(Qt.TextSelectableByMouse)
         dump.setProperty("class", "Box")

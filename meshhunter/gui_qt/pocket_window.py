@@ -44,6 +44,7 @@ class PocketMainWindow(MainWindow):
     # Companion-only: on a HAT device the fullscreen HAT touch UI
     # (hat_pocket_window.py) is used instead.
     HAS_HAT_UI = False
+    SMALL_BREAKPOINT = 0  # has its own fixed layout
 
     def __init__(self):
         super().__init__()

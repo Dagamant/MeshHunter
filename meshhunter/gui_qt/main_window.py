@@ -27,7 +27,7 @@ import sys
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
 from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QDialog,
@@ -65,7 +65,7 @@ from .settings_dialog import SettingsDialog
 from .theme import LINE, LOGO_PATH, PANEL_2
 from .widgets.hat_panel import HatPanel
 from .widgets.message_panel import MessagePanel
-from .widgets.packet_inspector import PacketInspector
+from .widgets.packet_inspector import OverlayShadow, PacketInspector
 from .widgets.packet_table import PacketTable
 from .widgets.sdr_waterfall import WaterfallView
 from .widgets.serial_drawer import SerialDrawer
@@ -91,6 +91,10 @@ class MainWindow(QMainWindow):
     # PocketMainWindow turns it off -- on a HAT device the fullscreen HAT
     # touch UI (hat_pocket_window.py) covers that instead.
     HAS_HAT_UI = True
+    # Redesign 1c: at or below this width the window switches to its
+    # small layout (see _set_small). PocketMainWindow turns it off.
+    SMALL_BREAKPOINT = 1280
+    SMALL_RF_HEIGHT = 140
 
     def __init__(self):
         super().__init__()
@@ -198,7 +202,12 @@ class MainWindow(QMainWindow):
         self.inspector = PacketInspector()
         self.inspector.setVisible(False)
         messages_page = QWidget()
+        self.messages_page = messages_page
+        self.inspector_shadow = OverlayShadow(messages_page)
+        self.inspector_shadow.setVisible(False)
+        self._small = False
         mrow = QHBoxLayout(messages_page)
+        self._messages_row = mrow
         mrow.setContentsMargins(0, 0, 0, 0)
         mrow.setSpacing(0)
         mrow.addWidget(self.message_panel, stretch=1)
@@ -256,17 +265,65 @@ class MainWindow(QMainWindow):
     def _apply_splitter_sizes(self):
         ui = self.config_data
         total = max(self.splitter.height(), 600)
-        rf = ui.get("ui_rf_height", 230) if self.rf_stack.isVisible() else 0
+        rf_height = self.SMALL_RF_HEIGHT if self._small else ui.get("ui_rf_height", 230)
+        rf = rf_height if self.rf_stack.isVisible() else 0
         serial = ui.get("ui_serial_height", 240) if self.serial_drawer.is_open() else 30
         self.splitter.setSizes([max(160, total - rf - serial), rf, serial])
 
     def _on_splitter_moved(self, *_):
         sizes = self.splitter.sizes()
-        if self.rf_stack.isVisible() and sizes[1] > 0:
+        if self.rf_stack.isVisible() and sizes[1] > 0 and not self._small:
             self.config_data["ui_rf_height"] = sizes[1]
         if self.serial_drawer.is_open():
             self.config_data["ui_serial_height"] = sizes[2]
         self._save_timer.start()
+
+    # ---- small window (redesign 1c) ------------------------------------------
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.SMALL_BREAKPOINT:
+            small = self.width() <= self.SMALL_BREAKPOINT
+            if small != self._small:
+                self._set_small(small)
+
+    def _set_small(self, small):
+        self._small = small
+        self.top_bar.set_compact(small)
+        self.stats_strip.set_compact(small)
+        self.message_panel.set_small(small)
+        self.waterfall_panel.set_small(small)
+        # The inspector floats over the table instead of taking a column.
+        visible = self.inspector.isVisible()
+        if small:
+            self._messages_row.removeWidget(self.inspector)
+            self.messages_page.installEventFilter(self)
+        else:
+            self.messages_page.removeEventFilter(self)
+            self._messages_row.addWidget(self.inspector)
+        self.inspector.set_overlay(small)
+        self.inspector.setVisible(visible)
+        self._place_inspector()
+        self._apply_splitter_sizes()
+
+    def _place_inspector(self):
+        if self._small:
+            page = self.messages_page
+            inset = 8
+            top = self.message_panel._header.height() + inset  # keep the filter / ⋯ menu usable
+            self.inspector.setGeometry(page.width() - self.inspector.width() - inset, top,
+                                       self.inspector.width(), max(120, page.height() - top - inset))
+            self.inspector_shadow.follow(self.inspector.geometry())
+            self.inspector_shadow.setVisible(self.inspector.isVisible())
+            self.inspector_shadow.raise_()
+            self.inspector.raise_()
+        else:
+            self.inspector_shadow.setVisible(False)
+
+    def eventFilter(self, obj, event):
+        if obj is self.messages_page and event.type() == QEvent.Resize:
+            self._place_inspector()
+        return super().eventFilter(obj, event)
 
     def _remember(self, key, value):
         self.config_data[key] = value
@@ -288,9 +345,11 @@ class MainWindow(QMainWindow):
     def _on_message_selected(self, m):
         if m is None:
             self.inspector.setVisible(False)
+            self.inspector_shadow.setVisible(False)
             return
         self.inspector.show_message(m, self._noise_floor())
         self.inspector.setVisible(True)
+        self._place_inspector()
 
     def _on_message_updated(self, m):
         if self.inspector.isVisible() and self.inspector.current() is m:
@@ -299,6 +358,7 @@ class MainWindow(QMainWindow):
     def _close_inspector(self):
         if self.inspector.isVisible():
             self.inspector.setVisible(False)
+            self.inspector_shadow.setVisible(False)
             self.message_panel.clear_selection()
 
     def _show_hat_popover(self):

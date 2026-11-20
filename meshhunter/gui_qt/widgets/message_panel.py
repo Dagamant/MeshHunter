@@ -22,7 +22,9 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QStyle,
     QStyledItemDelegate,
+    QMenu,
     QTableView,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -96,7 +98,8 @@ class MessageModel(QAbstractTableModel):
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
         if orientation == Qt.Horizontal and role == Qt.DisplayRole:
-            return COLUMNS[section].upper() if self.upper_headers else COLUMNS[section]
+            text = "RSSI" if section == COL_RSSI and getattr(self, "small", False) else COLUMNS[section]
+            return text.upper() if self.upper_headers else text
         if orientation == Qt.Horizontal and role == Qt.TextAlignmentRole and section == COL_HOPS:
             return int(Qt.AlignRight | Qt.AlignVCenter)
         return None
@@ -148,6 +151,8 @@ class MessageModel(QAbstractTableModel):
             signal = signal_text(m)
             if signal:
                 bits.append(signal)
+            if m.get("hops") is not None:
+                bits.append(f"{m['hops']} hop{'' if m['hops'] == 1 else 's'}")
             bits.append(m["text"])
             return "\n".join(bits)
         return None
@@ -213,6 +218,7 @@ class MessageRowDelegate(QStyledItemDelegate):
         super().__init__(view)
         self.view = view
         self.hover_row = -1
+        self.small = False  # small window: RSSI as a bare number, mesh as channel colour
 
     def paint(self, p, option, index):
         p.save()
@@ -234,13 +240,15 @@ class MessageRowDelegate(QStyledItemDelegate):
 
         if col == COL_MESH:
             self._paint_badge(p, inner, m)
-        elif col == COL_RSSI:
+        elif col == COL_RSSI and not self.small:
             self._paint_signal(p, inner, m)
         else:
             font = model.data(index, Qt.FontRole)
             color = model.data(index, Qt.ForegroundRole)
             if col == COL_TIME and selected:
                 color = QColor(ACCENT)
+            elif self.small and col == COL_CHANNEL:
+                color = MESH_COLORS.get(m.get("mesh"), QColor(TXT))
             p.setFont(font)
             p.setPen(color)
             align = model.data(index, Qt.TextAlignmentRole) or int(Qt.AlignLeft | Qt.AlignVCenter)
@@ -403,7 +411,48 @@ class MessagePanel(QWidget):
             row.addWidget(btn)
         self.find_button.setToolTip("Try to recover unknown #hashtag channels from captured traffic")
         self.pause_button.setToolTip("Freeze the list; new messages are kept and added on Resume")
+
+        # Small window: Find channels / Pause / Clear move into a "⋯" menu.
+        self.more_button = QToolButton()
+        self.more_button.setObjectName("sentButton")
+        self.more_button.setText("⋯")
+        self.more_button.setFixedSize(30, 26)
+        self.more_button.setCursor(Qt.PointingHandCursor)
+        self.more_button.setPopupMode(QToolButton.InstantPopup)
+        more = QMenu(self.more_button)
+        more.addAction("Find channels…", self._find_channels)
+        self.pause_action = more.addAction("Pause", self.toggle_pause)
+        more.addAction("Clear", self.clear)
+        self.more_button.setMenu(more)
+        self.more_button.setVisible(False)
+        row.addWidget(self.more_button)
+        self._header = header
         return header
+
+    def set_small(self, small):
+        """Small window (redesign 1c), desktop layout only: 36 px header
+        with a "⋯" menu, and Time · Channel · From · Message · RSSI."""
+        if self._compact:
+            return
+        self._header.setFixedHeight(36 if small else 40)
+        for btn in (self.find_button, self.pause_button, self.clear_button):
+            btn.setVisible(not small)
+        self.more_button.setVisible(small)
+        self.filter_edit.setFixedWidth(150 if small else 200)
+        view = self.view
+        view.row_delegate.small = small
+        view.setColumnHidden(COL_MESH, small)
+        view.setColumnHidden(COL_HOPS, small)
+        if small:
+            widths = {COL_TIME: 58 + ROW_PAD + CELL_GAP // 2, COL_CHANNEL: 96 + CELL_GAP,
+                      COL_FROM: 120 + CELL_GAP, COL_RSSI: 40 + ROW_PAD + CELL_GAP // 2}
+        else:
+            widths = self._desktop_widths
+        for col, w in widths.items():
+            view.setColumnWidth(col, w)
+        self.model.small = small
+        self.model.headerDataChanged.emit(Qt.Horizontal, COL_RSSI, COL_RSSI)
+        view.viewport().update()
 
     def _build_header_compact(self):
         header = QFrame()
@@ -505,6 +554,7 @@ class MessagePanel(QWidget):
                       COL_CHANNEL: 104 + CELL_GAP, COL_FROM: 158 + CELL_GAP,
                       COL_RSSI: 92 + CELL_GAP, COL_HOPS: 50 + ROW_PAD + CELL_GAP // 2}
             hidden = (COL_SIGNAL,)
+            self._desktop_widths = dict(widths)
             view.row_delegate = MessageRowDelegate(view)
             view.setItemDelegate(view.row_delegate)
             hdr.setStyleSheet(
@@ -582,10 +632,12 @@ class MessagePanel(QWidget):
     def _update_pause_label(self):
         if self.pause_button is None:
             return
-        if self._paused:
-            self.pause_button.setText(f"Resume ({len(self._pending)} new)")
-        else:
-            self.pause_button.setText("Pause")
+        text = f"Resume ({len(self._pending)} new)" if self._paused else "Pause"
+        self.pause_button.setText(text)
+        if getattr(self, "pause_action", None) is not None:
+            self.pause_action.setText(text)
+            self.more_button.setText("⋯ ⏸" if self._paused else "⋯")
+            self.more_button.setFixedWidth(44 if self._paused else 30)
 
     # ---- filtering ---------------------------------------------------------------
 

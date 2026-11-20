@@ -123,6 +123,8 @@ class DeviceChip(QToolButton):
         self._modes = []
         self._mode = "companion"
         self._connected = False
+        self._compact = False
+        self._port_text, self._detail_text = "", ""
 
         row = QHBoxLayout(self)
         row.setContentsMargins(8, 0, 10, 0)
@@ -175,20 +177,31 @@ class DeviceChip(QToolButton):
         self._connected = connected
         self.dot.set_state(ACCENT if connected else DIM, glow=connected)
         if connected:
-            self.port_label.setText(port_text or self._selection)
-            self.detail_label.setText(detail or "")
+            self._show(port_text or self._selection, detail or "")
         else:
             self._show_selection()
-        self.updateGeometry()
 
     def _show_selection(self):
         if self._mode == "hat":
-            self.port_label.setText("LoRa HAT")
-            self.detail_label.setText("SX1262 · RTL-SDR")
+            self._show("LoRa HAT", "SX1262 · RTL-SDR")
         else:
-            self.port_label.setText(self._selection or "no device")
-            self.detail_label.setText("not connected")
+            self._show(self._selection or "no device", "not connected")
+
+    def _show(self, port, detail):
+        self._port_text, self._detail_text = port, detail
+        if self._compact:
+            # "/dev/ttyACM1" -> "ttyACM1"; "Companion · 115200" -> "Companion"
+            port = port.rsplit("/", 1)[-1] if port.startswith("/") else port
+            detail = "" if detail == "not connected" else detail.split(" · ")[0]
+        self.port_label.setText(port)
+        self.detail_label.setText(detail)
+        self.detail_label.setVisible(bool(detail))
+        self.setToolTip(f"{self._port_text} · {self._detail_text}" if self._compact else "")
         self.updateGeometry()
+
+    def set_compact(self, compact):
+        self._compact = compact
+        self._show(self._port_text, self._detail_text)
 
     def _rebuild_menu(self):
         menu = self._menu
@@ -282,6 +295,10 @@ class GpsIndicator(QWidget):
             color = DIM
         self.text.setText(text)
         self.text.setStyleSheet(f"font-family: '{mono}'; font-size: 11px; color: {color}; background: transparent;")
+        self.setToolTip(f"GPS · {text}" if text else "GPS")
+
+    def set_compact(self, compact):
+        self.text.setVisible(not compact)
 
 
 class Segmented(QWidget):
@@ -328,11 +345,32 @@ class AdvertiseGroup(QWidget):
         self.zero_hop_button.clicked.connect(self.zero_hop_clicked)
         self.flood_button.clicked.connect(self.flood_clicked)
         row.addWidget(self.segmented)
+        # Small window: one "Advertise ▾" menu button instead.
+        self.menu_button = QToolButton()
+        self.menu_button.setObjectName("sentButton")
+        self.menu_button.setText("Advertise ▾")
+        self.menu_button.setFixedHeight(30)
+        self.menu_button.setCursor(Qt.PointingHandCursor)
+        self.menu_button.setPopupMode(QToolButton.InstantPopup)
+        self.menu_button.setStyleSheet(f"font-family: '{pick_sans_font()}'; font-size: 12px; font-weight: 500;"
+                                       f" padding: 0 10px; color: {TXT};")
+        menu = QMenu(self.menu_button)
+        menu.addAction("Advertise 0-hop", self.zero_hop_clicked.emit)
+        menu.addAction("Advertise flood", self.flood_clicked.emit)
+        self.menu_button.setMenu(menu)
+        self.menu_button.setVisible(False)
+        row.addWidget(self.menu_button)
         self.set_enabled(False)
 
     def set_enabled(self, enabled):
         self.zero_hop_button.setEnabled(enabled)
         self.flood_button.setEnabled(enabled)
+        self.menu_button.setEnabled(enabled)
+
+    def set_compact(self, compact):
+        self.caption.setVisible(not compact)
+        self.segmented.setVisible(not compact)
+        self.menu_button.setVisible(compact)
 
 
 class _DangerItem(QWidgetAction):
@@ -375,15 +413,24 @@ class SentButton(QToolButton):
         row = QHBoxLayout(self)
         row.setContentsMargins(10, 0, 10, 0)
         row.setSpacing(6)
-        row.addWidget(_label("SENT", DIM, 10))
+        self._sent_label = _label("SENT", DIM, 10)
+        row.addWidget(self._sent_label)
+        self._sync_label = _label("Sync", TXT, 12, mono=False, weight=500)
+        self._sync_label.setVisible(False)
+        row.addWidget(self._sync_label)
         self.wdgwars_count = _label("0", ACCENT, 12)
         row.addWidget(self.wdgwars_count)
-        row.addWidget(_label("WDGWars", DIM, 11))
-        self._ingest_bits = [_label("|", LINE, 11), _label("0", ACCENT, 12), _label("Ingest", DIM, 11)]
+        self._wdg_name = _label("WDGWars", DIM, 11)
+        row.addWidget(self._wdg_name)
+        self._ingest_sep = _label("|", LINE, 11)
+        self._ingest_name = _label("Ingest", DIM, 11)
+        self._ingest_bits = [self._ingest_sep, _label("0", ACCENT, 12), self._ingest_name]
         self.ingest_count = self._ingest_bits[1]
         for w in self._ingest_bits:
             row.addWidget(w)
         row.addWidget(_label("▾", DIM, 11))
+        self._ingest_shown = True
+        self._compact = False
 
         menu = QMenu(self)
         self.send_wdgwars_action = menu.addAction("Send pending to WDGWars", self.send_wdgwars_clicked.emit)
@@ -406,8 +453,23 @@ class SentButton(QToolButton):
         self.ingest_count.setText(str(total))
 
     def set_ingest_shown(self, shown):
+        self._ingest_shown = shown
+        self._apply()
+
+    def set_compact(self, compact):
+        self._compact = compact
+        self._apply()
+
+    def _apply(self):
+        c = self._compact
+        self._sent_label.setVisible(not c)
+        self._sync_label.setVisible(c)
+        self._wdg_name.setVisible(not c)
         for w in self._ingest_bits:
-            w.setVisible(shown)
+            w.setVisible(self._ingest_shown)
+        self._ingest_name.setVisible(self._ingest_shown and not c)
+        self._ingest_sep.setText("·" if c else "|")
+        self.setToolTip("Sent this session: WDGWars · Ingest" if c else "")
         self.updateGeometry()
 
     def set_clear_contacts_enabled(self, enabled):
@@ -440,12 +502,10 @@ class TopBar(QFrame):
 
         brand = QHBoxLayout()
         brand.setSpacing(8)
-        logo = QLabel()
-        pix = QPixmap(str(LOGO_PATH))
-        if not pix.isNull():
-            logo.setPixmap(pix.scaled(34, 34, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        logo.setFixedSize(34, 34)
-        brand.addWidget(logo)
+        self.logo = QLabel()
+        self._logo_pix = QPixmap(str(LOGO_PATH))
+        self._set_logo(34)
+        brand.addWidget(self.logo)
         self.wordmark = _label("MESHHUNTER", ACCENT, 13, weight=700, spacing="0.1em")
         brand.addWidget(self.wordmark)
         row.addLayout(brand)
@@ -482,20 +542,23 @@ class TopBar(QFrame):
         self.gps.set_state(state, text)
         self.gps_divider.setVisible(state != "hidden")
 
-    NARROW = 1280
+    COMPACT_HEIGHT = 44
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.set_narrow(self.width() <= self.NARROW)
+    def _set_logo(self, px):
+        if not self._logo_pix.isNull():
+            self.logo.setPixmap(self._logo_pix.scaled(px, px, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.logo.setFixedSize(px, px)
 
-    def set_narrow(self, narrow):
-        """Below ~1280 px: drop the wordmark, the chip's mode detail, the GPS
-        text and the ADVERTISE caption so the controls keep their size."""
-        self.wordmark.setVisible(not narrow)
-        self.device_chip.detail_label.setVisible(not narrow)
-        self.device_chip.updateGeometry()
-        self.gps.text.setVisible(not narrow)
-        self.advertise.caption.setVisible(not narrow)
+    def set_compact(self, compact):
+        """Small window (redesign 1c): 44 px bar, no wordmark, short device
+        chip and GPS, Advertise and Sync as menu buttons."""
+        self.setFixedHeight(self.COMPACT_HEIGHT if compact else self.HEIGHT)
+        self._set_logo(30 if compact else 34)
+        self.wordmark.setVisible(not compact)
+        self.device_chip.set_compact(compact)
+        self.gps.set_compact(compact)
+        self.advertise.set_compact(compact)
+        self.sent.set_compact(compact)
 
     def set_hat_mode(self, hat):
         """LoRa HAT mode has no device to connect or advertise from."""

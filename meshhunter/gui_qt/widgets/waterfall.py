@@ -256,6 +256,19 @@ class WaterfallPanel(QWidget):
         self.gain_combo.currentIndexChanged.connect(self._on_gain_changed)
         self.gain_combo.setVisible(False)  # only with an RTL-SDR running
         header.addWidget(self.gain_combo)
+        # Small window: only one of the two views fits; pick it here.
+        from .top_bar import Segmented
+
+        self.view_switch = Segmented(["Waterfall", "Signal/noise"], height=22, checkable=True)
+        self.view_switch.buttons[0].setChecked(True)
+        for i, btn in enumerate(self.view_switch.buttons):
+            btn.setAutoExclusive(True)
+            btn.setStyleSheet(btn.styleSheet().replace("font-size: 12px", "font-size: 11px"))
+            btn.clicked.connect(lambda _=False, i=i: self._show_single(i))
+        self.view_switch.setVisible(False)
+        header.addWidget(self.view_switch)
+        self._small = False
+        self._single = 0
         layout.addLayout(header)
 
         # Waterfall (sniffer RSSI or real RTL-SDR) | signal/noise graph, in a
@@ -313,7 +326,29 @@ class WaterfallPanel(QWidget):
         super().resizeEvent(event)
         self._apply_graph_width()
 
+    def set_small(self, small):
+        """Small window (redesign 1c): show the waterfall or the graph, not
+        both, chosen with the header's segmented switch."""
+        self._small = small
+        self.view_switch.setVisible(small)
+        self.mode_label.setVisible(not small)
+        if small:
+            self._show_single(self._single)
+        else:
+            self.wf_stack.setVisible(True)
+            self.noise_graph.setVisible(True)
+            self._apply_graph_width()
+
+    def _show_single(self, index):
+        self._single = index
+        self.view_switch.buttons[index].setChecked(True)
+        if self._small:
+            self.wf_stack.setVisible(index == 0)
+            self.noise_graph.setVisible(index == 1)
+
     def _apply_graph_width(self):
+        if self._small:
+            return
         total = self.splitter.width() - self.splitter.handleWidth()
         if total <= 0:
             return

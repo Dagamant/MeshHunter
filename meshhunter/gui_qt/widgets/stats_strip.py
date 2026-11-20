@@ -58,8 +58,10 @@ class StatsStrip(QFrame):
         self.noise = _Item("NOISE")
         self.rx = _Item("RX")
         self.rx_err = _Item("RX ERR")
+        self._long_labels = {self.rx_err: ("RX ERR", "ERR")}
         self.rx_err.setToolTip("bad CRC + header errors + timeouts")
         self.pre = _Item("PREAMBLES")
+        self._long_labels[self.pre] = ("PREAMBLES", "PRE")
         self.hops = _Item("HOPS")
         self._sniffer_items = [self.noise, self.rx, self.rx_err, self.pre, self.hops]
         for item in self._sniffer_items:
@@ -73,13 +75,21 @@ class StatsStrip(QFrame):
         nrow = QHBoxLayout(nodes)
         nrow.setContentsMargins(0, 0, 0, 0)
         nrow.setSpacing(14)
+        self._nrow = nrow
         mono = pick_mono_font()
         title = QLabel("NODES")
         title.setStyleSheet(f"font-family: '{mono}'; font-size: 11px; color: {DIM};")
         nrow.addWidget(title)
+        # Small window: "NODES 1873" then a tighter breakdown.
+        self.node_total = QLabel("0")
+        self.node_total.setStyleSheet(f"font-family: '{mono}'; font-size: 11px; color: {ACCENT};")
+        self.node_total.setVisible(False)
+        nrow.addWidget(self.node_total)
         self._nodes = {}
         for node_type, label in NODE_DISPLAY_TYPES:
             item = _Item(label.lower(), "0", suffix_label=True)
+            short = "rptr" if label.lower() == "repeater" else label.lower()
+            self._long_labels[item] = (label.lower(), short)
             self._nodes[node_type] = item
             nrow.addWidget(item)
         mt = _Item("meshtastic", "0", suffix_label=True)
@@ -147,6 +157,8 @@ class StatsStrip(QFrame):
             if node_type == MESHTASTIC_COUNT_KEY and count:
                 color = MESH_MESHTASTIC
             item.set_value(count, color)
+        total = sum(int(i.value.text()) for i in self._nodes.values() if i.value.text().isdigit())
+        self.node_total.setText(str(total))
 
     def reset(self):
         self.update_counts({k: 0 for k in self._nodes})
@@ -166,6 +178,19 @@ class StatsStrip(QFrame):
             return
         s = int(time.monotonic() - self._session_start)
         self.session.set_value(f"{s // 3600:02d}:{s // 60 % 60:02d}:{s % 60:02d}", TXT)
+
+    # ---- small window -------------------------------------------------------
+
+    COMPACT_HEIGHT = 28
+
+    def set_compact(self, compact):
+        self.setFixedHeight(self.COMPACT_HEIGHT if compact else self.HEIGHT)
+        for item, (long, short) in self._long_labels.items():
+            item.label.setText(short if compact else long)
+        self.node_total.setVisible(compact)
+        self._nrow.setSpacing(10 if compact else 14)
+        self.layout().setSpacing(16 if compact else 22)
+        self._shed()
 
     # ---- narrowing ----------------------------------------------------------
 
