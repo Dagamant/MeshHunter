@@ -308,7 +308,12 @@ class MainWindow(QMainWindow):
         logo_pixmap = QPixmap(str(LOGO_PATH))
         if not logo_pixmap.isNull():
             logo_label = QLabel()
-            logo_label.setPixmap(logo_pixmap.scaledToWidth(RAIL_WIDTH - 32, Qt.SmoothTransformation))
+            # The full-width badge (RAIL_WIDTH-32, square) ran ~320px tall --
+            # a third of the window's minimum height before any operational
+            # control was visible. Capped well below rail width so the
+            # wordmark/tagline stay legible while the rest of the rail wins
+            # the space.
+            logo_label.setPixmap(logo_pixmap.scaledToWidth(200, Qt.SmoothTransformation))
             logo_label.setAlignment(Qt.AlignCenter)
             layout.addWidget(logo_label)
 
@@ -394,6 +399,7 @@ class MainWindow(QMainWindow):
         self.message_panel.channels_found.connect(self._add_found_channels)
         self._update_channel_filter()
         self.bridge.sniffer_radios.connect(self.waterfall_panel.set_radios)
+        self.waterfall_panel.log.connect(self._log_line)
         self.bridge.wdgwars_sent.connect(self._on_wdgwars_sent)
         self.bridge.ingest_sent.connect(self._on_ingest_sent)
         if self.HAS_HAT_UI:
@@ -489,6 +495,7 @@ class MainWindow(QMainWindow):
             self.live_pill.set_connected(True)
         self._set_connected_controls_state(connected)
         if payload == "Disconnected":
+            self.waterfall_panel.set_live(False)  # frees the RTL-SDR
             self._update_brand_status(False)
             self._close_session_log()
             self.live_pill.set_connected(False)
@@ -500,6 +507,7 @@ class MainWindow(QMainWindow):
         self._update_brand_status(False)
         self.live_pill.set_connected(False)
         self.worker = None
+        self.waterfall_panel.set_live(False)
         self._close_session_log()
 
     def _on_ble_devices(self, payload):
@@ -711,6 +719,8 @@ class MainWindow(QMainWindow):
         self.live_pill.set_connected(True)
 
     def _start_waterfall(self, settings):
+        # The radio panel's sniffer waterfall may be using the same dongle.
+        self.waterfall_panel.set_sdr_allowed(False)
         if self.waterfall_worker is not None:
             self.waterfall_worker.stop()
             self.waterfall_worker.join(timeout=2)
@@ -743,6 +753,7 @@ class MainWindow(QMainWindow):
             self.waterfall_worker.join(timeout=2)
             self.waterfall_worker = None
             self.waterfall_view.set_status("RTL-SDR idle")
+        self.waterfall_panel.set_sdr_allowed(True)
         self.hat_panel.set_running(False)
         self.packet_table.set_status("stopped")
         if self.worker is None:
@@ -798,6 +809,7 @@ class MainWindow(QMainWindow):
     # ---- lifecycle ------------------------------------------------------
 
     def closeEvent(self, event):
+        self.waterfall_panel.shutdown()
         self._stop_hat()
         if self.worker is not None:
             self.worker.stop()

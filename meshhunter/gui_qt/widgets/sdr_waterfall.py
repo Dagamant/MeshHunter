@@ -38,8 +38,11 @@ _LUT = _build_lut()
 
 
 class WaterfallCanvas(QWidget):
-    def __init__(self, parent=None, font_px=10, spectrum_height=SPECTRUM_HEIGHT):
+    def __init__(self, parent=None, font_px=10, spectrum_height=SPECTRUM_HEIGHT, row_px=1):
         super().__init__(parent)
+        # Pixels per waterfall row: >1 for slow feeds (e.g. a multi-segment
+        # sweep) so the picture isn't a thin sliver.
+        self.row_px = row_px
         self.setMinimumHeight(160)
         # Bigger labels / a shorter spectrum strip for the 640x480 pocket UI.
         self.font_px = font_px
@@ -53,12 +56,28 @@ class WaterfallCanvas(QWidget):
         self.center_hz = 0
         self.span_hz = 1
         self.channel_bw_hz = 0
+        # Optional several labelled channels (e.g. every sniffer profile)
+        # instead of the single centred channel_bw_hz band.
+        self.channels = []  # [(center_hz, bw_hz, label)]
+        self.active = set()  # indices into channels being listened to now
+        self.idle_text = "waterfall idle"
 
     def configure(self, center_hz, span_hz, channel_bw_hz):
         self.center_hz = center_hz
         self.span_hz = span_hz
         self.channel_bw_hz = channel_bw_hz
         self.clear()
+
+    def set_channels(self, channels):
+        self.channels = list(channels)
+        self.active = set()
+        self.update()
+
+    def set_active(self, indices):
+        indices = set(indices)
+        if indices != self.active:
+            self.active = indices
+            self.update()
 
     def clear(self):
         self._rows = None
@@ -98,8 +117,8 @@ class WaterfallCanvas(QWidget):
             img = QImage(img_data.data, img_data.shape[1], img_data.shape[0], img_data.shape[1] * 4, QImage.Format_ARGB32)
             # One image row per pixel; rows not yet received stay
             # background rather than showing the colormap's lowest colour.
-            rows_shown = min(self._filled, max(1, int(wf_rect.height())))
-            dest = QRectF(0, wf_top, w, rows_shown)
+            rows_shown = min(self._filled, max(1, int(wf_rect.height() / self.row_px)))
+            dest = QRectF(0, wf_top, w, rows_shown * self.row_px)
             p.drawImage(dest, img, QRectF(0, 0, img_data.shape[1], rows_shown))
 
         if self._spectrum is not None:
@@ -114,8 +133,10 @@ class WaterfallCanvas(QWidget):
             p.setPen(QPen(QColor("#ffe14d"), 2))
             p.drawPath(path)
 
-        # LoRa channel band
-        if self.channel_bw_hz:
+        # LoRa channel band(s)
+        if self.channels:
+            self._paint_channels(p, w, h, spec_top)
+        elif self.channel_bw_hz:
             x0 = self._freq_to_x(self.center_hz - self.channel_bw_hz / 2, w)
             x1 = self._freq_to_x(self.center_hz + self.channel_bw_hz / 2, w)
             band = QColor("#ffffff")
@@ -137,8 +158,8 @@ class WaterfallCanvas(QWidget):
         # Pick a tick spacing that leaves room for each label.
         label_px = self.font_px * 6
         step = next(
-            (s for s in (100_000, 200_000, 250_000, 500_000, 1_000_000) if w * s / self.span_hz >= label_px),
-            1_000_000,
+            (s for s in (100_000, 200_000, 250_000, 500_000, 1_000_000, 2_000_000) if w * s / self.span_hz >= label_px),
+            2_000_000,
         )
         start = self.center_hz - self.span_hz / 2
         f = np.ceil(start / step) * step
@@ -152,8 +173,35 @@ class WaterfallCanvas(QWidget):
 
         if self._rows is None:
             p.setPen(QColor("#ffffff"))
-            p.drawText(wf_rect, Qt.AlignCenter, "waterfall idle")
+            p.drawText(wf_rect, Qt.AlignCenter, self.idle_text)
         p.end()
+
+    def _paint_channels(self, p, w, h, spec_top):
+        """A shaded band per channel over the spectrum, faint edge lines down
+        the waterfall, and its name; the one(s) being listened to now are
+        drawn in the accent colour."""
+        font = p.font()
+        font.setFamily(self._mono)
+        font.setPixelSize(max(8, self.font_px - 1))
+        p.setFont(font)
+        for i, (center, bw, label) in enumerate(self.channels):
+            live = i in self.active
+            color = QColor(ACCENT if live else "#ffffff")
+            x0 = self._freq_to_x(center - bw / 2, w)
+            x1 = max(x0 + 2, self._freq_to_x(center + bw / 2, w))
+            band = QColor(color)
+            band.setAlpha(70 if live else 30)
+            p.fillRect(QRectF(x0, spec_top, x1 - x0, self.spectrum_height), band)
+            edge = QColor(color)
+            edge.setAlpha(150 if live else 60)
+            p.setPen(QPen(edge, 1, Qt.DashLine))
+            p.drawLine(int(x0), spec_top, int(x0), h)
+            p.drawLine(int(x1), spec_top, int(x1), h)
+            # Centred on the band but kept fully on screen.
+            p.setPen(color)
+            tw = p.fontMetrics().horizontalAdvance(label)
+            tx = min(max(2, (x0 + x1) / 2 - tw / 2), w - tw - 2)
+            p.drawText(QRectF(tx, spec_top + 2, tw + 2, self.font_px + 4), Qt.AlignLeft | Qt.AlignTop, label)
 
 
 class WaterfallView(QWidget):
