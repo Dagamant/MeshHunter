@@ -214,6 +214,22 @@ def _node_csv_paths():
     return [REPEATERS_CSV_PATH] + [spec[0] for spec in EXTRA_NODE_TYPES.values()]
 
 
+def pending_counts():
+    """{"wdgwars": n, "ingest": n}: logged nodes not yet sent to each
+    endpoint, counted the same way the flush_pending_* functions pick them
+    (shown in the Sync menu)."""
+    counts = {"wdgwars": 0, "ingest": 0}
+    for csv_path in _node_csv_paths():
+        rows = load_known_nodes(csv_path)
+        if not rows:
+            continue
+        wdg = {nid: r for nid, r in rows.items() if not r.get("uploaded_wdgwars")}
+        ing = {nid: r for nid, r in rows.items() if not r.get("uploaded_ingest")}
+        counts["wdgwars"] += len(build_meshcore_records(wdg)) if wdg else 0
+        counts["ingest"] += len(build_ingest_records(ing)) if ing else 0
+    return counts
+
+
 def flush_pending_wdgwars(config, ui_queue):
     """Load every known node from all four CSVs and send whatever's still
     pending (per the uploaded_wdgwars column) to WDGWars, marking rows done

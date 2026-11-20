@@ -57,7 +57,7 @@ from ..core.lora_worker import LoRaWorker, radio_settings_from_config
 from ..core.paths import LORA_PACKETS_CSV_PATH
 from ..core.rtlsdr import WaterfallWorker
 from ..core.session import SessionLog, device_label, make_worker, session_log_name
-from ..core.uploads import flush_pending_ingest, flush_pending_wdgwars
+from ..core.uploads import flush_pending_ingest, flush_pending_wdgwars, pending_counts
 from ..core.worker import MeshCoreWorker
 from . import dialogs
 from .bridge import Bridge
@@ -189,6 +189,7 @@ class MainWindow(QMainWindow):
         self.sync_panel = self.top_bar.sent
         self.live_pill = self.top_bar.live
         self.sync_panel.set_ingest_shown(self.ingest_configured)
+        self.sync_panel.pending_counts = pending_counts
         self.connection_panel.set_modes(_MODES if HAT_SUPPORTED else _MODES[:1])
 
         self.stats_strip = StatsStrip()
@@ -340,7 +341,10 @@ class MainWindow(QMainWindow):
     # ---- packet inspector -------------------------------------------------
 
     def _noise_floor(self):
-        noises = [p["noise"] for p in self.stats_strip._latest.values() if p.get("noise") is not None]
+        strip = getattr(self, "stats_strip", None)  # none in the pocket layout
+        if strip is None:
+            return None
+        noises = [p["noise"] for p in strip._latest.values() if p.get("noise") is not None]
         return min(noises) if noises else None
 
     def _on_message_selected(self, m):
@@ -552,6 +556,7 @@ class MainWindow(QMainWindow):
         if bar is not None:
             bar.add_stat(payload)
         self._show_radio_rx(payload.get("radio") or "", payload.get("ok"))
+        self.message_panel.set_noise_floor(self._noise_floor())
 
     def _on_sniffer_radios(self, radios):
         self._radios = list(radios)
@@ -585,6 +590,7 @@ class MainWindow(QMainWindow):
         else:
             self.stats_strip.stop_session()
             self._on_sniffer_radios([])  # disconnected: no radio chips
+            self.message_panel.set_noise_floor(None)
 
     def _on_wdgwars_sent(self, payload):
         self.wdgwars_sent_total += payload

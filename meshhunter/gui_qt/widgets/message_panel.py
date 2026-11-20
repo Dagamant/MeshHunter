@@ -244,6 +244,7 @@ class MessageRowDelegate(QStyledItemDelegate):
         self.view = view
         self.hover_row = -1
         self.small = False  # small window: RSSI as a bare number, mesh as channel colour
+        self.floor = None  # current noise floor (dBm): a tick on each signal bar
 
     def paint(self, p, option, index):
         p.save()
@@ -338,10 +339,17 @@ class MessageRowDelegate(QStyledItemDelegate):
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(LINE_SOFT))
         p.drawRoundedRect(track, 2, 2)
+        floor_frac = None if self.floor is None else min(1.0, max(0.0, (self.floor + 110) / 80))
         if rssi is not None:
             frac = min(1.0, max(0.0, (rssi + 110) / 80))
             p.setBrush(QColor(ACCENT if frac > 0.6 else LOG_WARN))
-            p.drawRoundedRect(QRectF(track.left(), track.top(), 28 * frac, 4), 2, 2)
+            # With a known floor the fill runs from the floor up to the RSSI,
+            # so its length is the packet's margin over the noise.
+            start = floor_frac if floor_frac is not None else 0.0
+            if frac > start:  # at or below the floor: tick only
+                p.drawRoundedRect(QRectF(track.left() + 28 * start, track.top(), 28 * (frac - start), 4), 2, 2)
+        if floor_frac is not None:
+            p.fillRect(QRectF(track.left() + 28 * floor_frac - 0.5, track.top() - 2, 1, 8), QColor(LOG_WARN))
         font = QFont(pick_mono_font())
         font.setPixelSize(12)
         p.setFont(font)
@@ -470,6 +478,13 @@ class MessagePanel(QWidget):
         row.addWidget(self.more_button)
         self._header = header
         return header
+
+    def set_noise_floor(self, dbm):
+        """Current noise floor, marked on every row's signal bar (desktop)."""
+        delegate = getattr(self.view, "row_delegate", None)
+        if delegate is not None and delegate.floor != dbm:
+            delegate.floor = None if dbm is None else round(dbm)
+            self.view.viewport().update()
 
     def set_radio_numbers(self, numbers):
         """{radio label: number}; two or more radios show the Radio and

@@ -444,7 +444,10 @@ class SentButton(QToolButton):
         self.clear_action = _DangerItem("Clear device contacts", menu)
         self.clear_action.triggered.connect(self.clear_contacts_clicked.emit)
         menu.addAction(self.clear_action)
+        menu.aboutToShow.connect(self._show_pending)
         self.setMenu(menu)
+        # Callable -> {"wdgwars": n, "ingest": n}; set by the window.
+        self.pending_counts = None
         self.set_clear_contacts_enabled(False)
 
     def sizeHint(self):
@@ -486,6 +489,18 @@ class SentButton(QToolButton):
     def set_send_ingest_visible(self, visible):
         self.send_ingest_action.setVisible(visible)
         self._update_sep()
+
+    def _show_pending(self):
+        counts = {}
+        if self.pending_counts is not None:
+            try:
+                counts = self.pending_counts()
+            except Exception:  # unreadable CSV etc.: just leave the counts off
+                counts = {}
+        for action, key, text in ((self.send_wdgwars_action, "wdgwars", "Send pending to WDGWars"),
+                                  (self.send_ingest_action, "ingest", "Send pending to Ingest API")):
+            n = counts.get(key)
+            action.setText(f"{text} ({n})" if n is not None else text)
 
     def _update_sep(self):
         self._pending_sep.setVisible(self.send_wdgwars_action.isVisible() or self.send_ingest_action.isVisible())
