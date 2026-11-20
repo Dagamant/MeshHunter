@@ -283,8 +283,16 @@ QLineEdit, QComboBox {{
     color: {TXT};
 }}
 
-QLineEdit:focus, QComboBox:focus {{
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{
     border: 1px solid {ACCENT};
+}}
+
+QSpinBox {{
+    background-color: {PANEL_2};
+    border: 1px solid {LINE_SOFT};
+    border-radius: 8px;
+    padding: 4px 8px;
+    color: {TXT};
 }}
 
 QComboBox::drop-down {{

@@ -274,3 +274,30 @@ def flush_pending_ingest(config, ui_queue):
 
     if not sent_anything:
         ui_queue.put(("log", "-- No pending nodes to send to Ingest API --"))
+
+
+def test_ingest_endpoint(url, api_key, timeout=10):
+    """Settings' "Test" link: POST an empty record list (nothing gets
+    ingested) and report whether the endpoint accepted it.
+    Returns (ok, short text for the UI)."""
+    if not url:
+        return False, "no URL"
+    req = urllib.request.Request(
+        url,
+        data=b"[]",
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-API-Key": api_key or "",
+            "Accept": "application/json",
+            "User-Agent": "meshcore-cli/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as resp:
+            return True, f"HTTP {resp.status}"
+    except urllib.error.HTTPError as e:
+        return False, f"HTTP {e.code}" + (" · check the API key" if e.code in (401, 403) else "")
+    except Exception as exc:  # DNS, refused, timeout, bad URL, TLS...
+        reason = getattr(exc, "reason", None) or exc
+        return False, str(reason)[:60]

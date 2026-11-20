@@ -371,16 +371,21 @@ class MainWindow(QMainWindow):
         return None
 
     def _open_settings_dialog(self):
+        counts, unknown = self.message_panel.channel_stats()
         dialog = SettingsDialog(
             self.config_data,
             list_serial_ports(),
             self.gps_configured,
             self.ingest_configured,
             parent=self,
+            channel_counts=counts,
+            unknown_hashes=unknown,
+            find_channels=lambda entries: self.message_panel.crack_channels(entries, parent=dialog),
+            sent={"wdgwars": self.wdgwars_sent_total, "ingest": self.ingest_sent_total},
         )
         size = self._settings_dialog_size()
         if size is not None:
-            dialog.resize(*size)
+            dialog.fit_small(*size)
         self._settings_dialog = dialog
         try:
             if dialog.exec() == QDialog.Accepted:

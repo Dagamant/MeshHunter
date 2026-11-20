@@ -1,39 +1,39 @@
-"""GPS settings section: enable switch, serial port picker.
+"""Settings > GPS: enable switch and serial port picker.
 
-Lives inside SettingsDialog, and only shown at all when the config file
-already has a gps_port/gps_enabled key -- see main_window.py's
-gps_configured check. The live fix readout isn't configuration, so it's a
-main-window status label instead (updated continuously; this panel is only
-visible while the dialog is open).
+Only shown when the config file already has a gps_port/gps_enabled key --
+see main_window.py's gps_configured check. The live fix readout isn't
+configuration, so it lives in the main window's top bar instead.
 """
 
-from PySide6.QtWidgets import QComboBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QComboBox
 
-from .common import divider, labeled_switch, section_label
+from .settings_common import SettingsPage, caption, hint, toggle_row
 
 
-class GPSPanel(QWidget):
+class GPSPanel(SettingsPage):
+    TITLE = "GPS"
+    NAV_TITLE = "GPS"
+    DESCRIPTION = "Positions are stamped onto logged nodes and uploads. Use the GPS receiver's serial port."
+
     def __init__(self, parent=None):
         super().__init__(parent)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(11)
-        layout.addWidget(section_label("GPS"))
-
-        switch_row, self.enabled_switch = labeled_switch("Enabled")
+        row, self.enabled_switch = toggle_row("Enabled")
         self.enabled_switch.toggled.connect(self._on_enabled_toggled)
-        layout.addWidget(switch_row)
+        self.body.addWidget(row)
 
+        self.body.addWidget(caption("PORT"))
         self.port_combo = QComboBox()
         self.port_combo.setEditable(True)
         self.port_combo.setMinimumHeight(34)
-        layout.addWidget(self.port_combo)
-
-        layout.addWidget(divider())
+        self.port_combo.setMaximumWidth(360)
+        self.port_combo.currentTextChanged.connect(lambda _: self.changed.emit())
+        self.body.addWidget(self.port_combo)
+        self.body.addWidget(hint("A GPS puck is usually /dev/ttyACM0 or /dev/ttyUSB0. "
+                                 "Don't pick the radio's own port."))
 
     def _on_enabled_toggled(self, checked):
         self.port_combo.setEnabled(checked)
+        self.changed.emit()
 
     def set_ports(self, values):
         current = self.port_combo.currentText()
@@ -55,3 +55,11 @@ class GPSPanel(QWidget):
 
     def set_port(self, value):
         self.port_combo.setCurrentText(value)
+
+    def summary(self):
+        if not self.is_enabled():
+            return "Off"
+        return f"On · {self.port() or 'no port'}"
+
+    def values(self):
+        return {"gps_port": self.port(), "gps_enabled": self.is_enabled()}

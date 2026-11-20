@@ -642,20 +642,41 @@ class MessagePanel(QWidget):
             self._apply_filter()
 
     def _find_channels(self):
+        chosen = self.crack_channels(self._subscribed_entries, parent=self)
+        if chosen:
+            self.channels_found.emit(chosen)
+
+    def crack_channels(self, entries, parent=None):
+        """Try to recover unknown #hashtag channels from the captured
+        traffic (skipping those in `entries`); shows the results dialog and
+        returns the names the user picked."""
         from ...core import channel_crack as cc
         from ...core.channels import subscribed_channels
         from .crack_dialog import CrackResultsDialog
 
         rows = self.model.rows
         payloads = cc.captured_payloads(rows)
-        known = {c["hash"] for c in subscribed_channels({"meshcore_channels": self._subscribed_entries})}
+        known = {c["hash"] for c in subscribed_channels({"meshcore_channels": entries})}
         names = cc.candidate_names(extra=cc.words_from_messages(rows))
         results = cc.crack(payloads, names, known_hashes=known)
-        dialog = CrackResultsDialog(results, len(payloads), self)
+        dialog = CrackResultsDialog(results, len(payloads), parent or self)
         if dialog.exec() and results:
-            chosen = dialog.chosen_names()
-            if chosen:
-                self.channels_found.emit(chosen)
+            return dialog.chosen_names()
+        return []
+
+    def channel_stats(self):
+        """({channel name lowercased: message count}, number of distinct
+        unknown channel hashes) over this session's rows."""
+        counts, unknown = {}, set()
+        for m in self.model.rows:
+            name = channel_text(m)
+            if not name:
+                continue
+            if name.startswith("hash "):
+                unknown.add(name)
+            else:
+                counts[name.lower()] = counts.get(name.lower(), 0) + 1
+        return counts, len(unknown)
 
     def clear(self):
         self.model.clear()
