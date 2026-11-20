@@ -36,6 +36,9 @@ ALL_CONTACTS_CSV_PATH = DATA_DIR / "all_contacts.csv"
 MESHTASTIC_NODES_CSV_PATH = DATA_DIR / "meshtastic_nodes.csv"
 SNIFFER_PACKETS_PATH = DATA_DIR / "sniffer_packets.jsonl"
 SESSION_LOG_DIR = DATA_DIR / "logs"
+# Every packet the LoRa HAT hears (MeshCore or Meshtastic), with where we
+# were when we heard it.
+LORA_PACKETS_CSV_PATH = DATA_DIR / "lora_packets.csv"
 
 # Node types (beyond repeaters, handled separately) that only get
 # logged/uploaded when they've advertised real coordinates (contacts with

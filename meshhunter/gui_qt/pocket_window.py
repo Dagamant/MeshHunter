@@ -39,6 +39,10 @@ POCKET_HEIGHT = 480
 
 
 class PocketMainWindow(MainWindow):
+    # Companion-only: on a HAT device the fullscreen HAT touch UI
+    # (hat_pocket_window.py) is used instead.
+    HAS_HAT_UI = False
+
     def __init__(self):
         super().__init__()
         # Overrides MainWindow's resize(1280, 860)/setMinimumSize(760, 560)
