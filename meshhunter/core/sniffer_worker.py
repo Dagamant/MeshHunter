@@ -528,7 +528,9 @@ class SnifferWorker:
             self._write_raw(record)
             self._event_log("MC_RX", who + format_rx_log(d) + ("" if "error" not in d else f" error={d['error']!r}"))
             self._on_meshcore(d, rssi)
-            self.ui_queue.put(("message", meshcore_message(d, source, profile=pname)))
+            m = meshcore_message(d, source, profile=pname, raw=raw)
+            m["profile_label"] = profile.label() if profile else pname
+            self.ui_queue.put(("message", m))
         elif sync == SYNC_MESHTASTIC:
             d = decode_meshtastic(raw, self.mt_channels)
             record["decoded"] = _jsonable(d)
@@ -539,6 +541,8 @@ class SnifferWorker:
                 d, rssi, snr, pname, {k: v.get("long_name") for k, v in self.meshtastic_nodes.items() if v.get("long_name")},
             )
             m["source"] = source
+            m["raw_hex"] = raw.hex()
+            m["profile_label"] = profile.label() if profile else pname
             self.ui_queue.put(("message", m))
         else:
             self._write_raw(record)

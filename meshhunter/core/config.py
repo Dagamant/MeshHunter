@@ -86,6 +86,30 @@ def _with_hat_defaults(config, data):
     return config
 
 
+# Desktop window layout the user dragged/toggled (see gui_qt/main_window.py).
+UI_DEFAULTS = {
+    "ui_rf_height": 230,
+    "ui_serial_height": 240,
+    "ui_rf_graph_width": 380,
+    "ui_serial_open": False,
+}
+
+
+def _ui_config(data):
+    out = {}
+    for key, default in UI_DEFAULTS.items():
+        value = data.get(key, default)
+        if isinstance(default, bool):
+            value = bool(value)
+        else:
+            try:
+                value = max(0, int(value))
+            except (TypeError, ValueError):
+                value = default
+        out[key] = value
+    return out
+
+
 def load_config():
     if CONFIG_PATH.exists():
         try:
@@ -101,7 +125,7 @@ def load_config():
                 "gps_port": data.get("gps_port", ""),
                 "gps_enabled": bool(data.get("gps_enabled", True)),
                 "batch_uploads": bool(data.get("batch_uploads", False)),
-                "sidebar_hidden": bool(data.get("sidebar_hidden", False)),
+                **_ui_config(data),
                 "meshcore_channels": config_channels(data),
                 **_sniffer_config(data),
             }, data)
@@ -118,7 +142,7 @@ def load_config():
         "gps_port": "",
         "gps_enabled": True,
         "batch_uploads": False,
-        "sidebar_hidden": False,
+        **_ui_config({}),
         "meshcore_channels": config_channels({}),
         **_sniffer_config({}),
     }, {})

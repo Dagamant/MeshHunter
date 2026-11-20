@@ -22,6 +22,8 @@ regular desktop layout.
 
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QTabWidget, QVBoxLayout, QWidget
 
+from ..core.constants import SERIAL_BAUD
+from ..core.devices import parse_device_selection
 from .main_window import MainWindow
 from .theme import ACCENT, DIM, pick_mono_font
 from .widgets.advertise_panel import AdvertisePanel
@@ -140,6 +142,44 @@ class PocketMainWindow(MainWindow):
 
     def _set_waterfall_visible(self, visible):
         self._tabs.setTabVisible(self._radio_tab_index, visible)
+
+    # ---- the desktop layout's extras don't exist here -------------------------
+
+    def _wire_layout_signals(self):
+        pass
+
+    def _session_timer(self, running):
+        pass
+
+    def _toggle_serial_drawer(self):
+        pass
+
+    def _close_inspector(self):
+        pass
+
+    def _apply_splitter_sizes(self):
+        pass
+
+    def _update_brand_status(self, connected, port=None):
+        mono = pick_mono_font()
+        if connected and port:
+            self.device_arrow_label.setStyleSheet(f"font-family: '{mono}'; font-size: 11px; color: {ACCENT};")
+            kind, target = parse_device_selection(port)
+            if kind == "ble":
+                self.status_label.setText(f"BLE · {target}")
+            elif kind == "usb_radio":
+                self.status_label.setText(f"USB LoRa · {target or 'CH341'}")
+            elif kind == "sniffer_group":
+                self.status_label.setText("all LoRa sniffers")
+            else:
+                self.status_label.setText(f"{target} · {SERIAL_BAUD}")
+        else:
+            self.device_arrow_label.setStyleSheet(f"font-family: '{mono}'; font-size: 11px; color: {DIM};")
+            self.status_label.setText("not connected")
+
+    def _update_gps_display(self):
+        # No room for a GPS readout in the pocket top bar (gps_fix_label is None).
+        pass
 
     def _settings_dialog_size(self):
         # Leaves a small margin so the dialog's own frame/title bar stays

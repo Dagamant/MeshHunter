@@ -13,10 +13,16 @@ the node logger records (no GPS, bad signature, encrypted, chat text...):
     rssi/snr/hops, source ("sniffer" | "companion"), profile (sniffer only)
     key       identifies one transmission, so relayed copies can be grouped
 
+and, for the packet inspector, where known: t_ms (time with milliseconds),
+raw_hex, route, ptype, path (hex) / path_hops, chan_hash, payload_len,
+decrypted, profile_label. MessageLog adds heard + copies (one entry per
+relayed copy folded into the row).
+
 Framework-agnostic: the Qt panel only renders what's here.
 """
 
 import time
+from datetime import datetime
 
 from .constants import ADV_TYPE_NAMES
 
@@ -27,6 +33,7 @@ MESH_LABELS = {"meshcore": "MeshCore", "meshtastic": "Meshtastic"}
 def _base(mesh, source, rssi=None, snr=None, profile=None):
     return {
         "time": time.strftime("%H:%M:%S"),
+        "t_ms": datetime.now().strftime("%H:%M:%S.%f")[:-3],
         "mesh": mesh,
         "source": source,
         "profile": profile or "",
@@ -39,17 +46,42 @@ def _base(mesh, source, rssi=None, snr=None, profile=None):
         "to": "",
         "text": "",
         "key": None,
+        "raw_hex": "",
+        "route": "",
+        "ptype": "",
+        "path": "",
+        "path_hops": [],
+        "chan_hash": None,
+        "payload_len": None,
+        "decrypted": False,
+        "profile_label": "",
     }
 
 
-def meshcore_message(d, source, rssi=None, snr=None, profile=None):
+def meshcore_message(d, source, rssi=None, snr=None, profile=None, raw=None):
     """d: decode_meshcore() output or a companion RX_LOG_DATA payload
-    (same keys)."""
+    (same keys). raw: the over-the-air bytes, when the caller has them
+    (a companion payload carries its own raw_hex)."""
     m = _base("meshcore", source, d.get("rssi", rssi), d.get("snr", snr), profile)
     if d.get("pkt_hash") is not None:
         m["key"] = ("mc", d["pkt_hash"])
     m["hops"] = d.get("path_len")
     ptype = d.get("payload_typename", "?")
+    m["raw_hex"] = raw.hex() if isinstance(raw, (bytes, bytearray)) else (d.get("raw_hex") or "")
+    m["route"] = d.get("route_typename") or ""
+    m["ptype"] = ptype
+    m["path"] = d.get("path") or ""
+    hops = d.get("path_hops")
+    if hops is None and m["path"]:
+        size = max(1, int(d.get("path_hash_size") or 1)) * 2
+        hops = [m["path"][i:i + size] for i in range(0, len(m["path"]), size)]
+    m["path_hops"] = list(hops or [])
+    m["chan_hash"] = d.get("chan_hash")
+    payload = d.get("pkt_payload")
+    if isinstance(payload, (bytes, bytearray)):
+        m["payload_len"] = len(payload)
+    elif d.get("grp_cipher"):
+        m["payload_len"] = len(d["grp_cipher"]) // 2
 
     if ptype == "ADVERT":
         m["kind"] = "advert"
@@ -66,6 +98,7 @@ def meshcore_message(d, source, rssi=None, snr=None, profile=None):
     elif ptype == "GRP_TXT":
         if d.get("message") is not None:
             m["kind"] = "text"
+            m["decrypted"] = True
             m["channel"] = d.get("chan_name") or "?"
             # Group text carries the sender inside the body: "name: message".
             name, sep, body = d["message"].partition(": ")
@@ -120,6 +153,9 @@ def meshtastic_message(d, rssi=None, snr=None, profile=None, names=None):
         names.setdefault(sender, d["long_name"])
     m["key"] = ("mt", d.get("from_num"), d.get("id"))
     m["hops"] = d.get("hops_away")
+    m["ptype"] = d.get("portname") or ("ENCRYPTED" if d.get("encrypted") else "")
+    m["chan_hash"] = d.get("chan_hash")
+    m["decrypted"] = not d.get("encrypted")
     m["sender"] = _mt_name(sender, names)
     to = d.get("to", "")
     m["to"] = "" if to == "^all" else _mt_name(to, names)
@@ -196,6 +232,12 @@ def channel_text(m):
     return "DM" if m["kind"] == "dm" else m["channel"]
 
 
+def _copy(m):
+    """One heard copy of a transmission, for the inspector's "Copies heard"."""
+    return {"t": m.get("t_ms") or m.get("time", ""), "rssi": m.get("rssi"), "snr": m.get("snr"),
+            "path_len": m.get("hops")}
+
+
 class MessageLog:
     """Newest-first list of message rows. A flooded packet is usually heard
     several times (once per repeater in range); copies of the same
@@ -220,6 +262,7 @@ class MessageLog:
     def merge(self, index, new):
         old = self.rows[index]
         old["heard"] = old.get("heard", 1) + 1
+        old.setdefault("copies", []).append(_copy(new))
         if new.get("rssi") is not None and (old.get("rssi") is None or new["rssi"] > old["rssi"]):
             old["rssi"], old["snr"] = new["rssi"], new.get("snr")
         if new.get("hops") is not None and (old.get("hops") is None or new["hops"] < old["hops"]):
@@ -228,6 +271,7 @@ class MessageLog:
     def insert(self, m):
         m = dict(m)
         m["heard"] = 1
+        m["copies"] = [_copy(m)]
         self.rows.insert(0, m)
 
     def overflow(self):
@@ -250,14 +294,21 @@ class MessageLog:
         self.rows = []
 
 
-def matches(m, mesh=None, text_only=False, channel=None):
+def matches(m, mesh=None, text_only=False, channel=None, text=None):
     """channel: only rows on that channel (as channel_text shows it, so
-    "DM" picks direct messages), compared case-insensitively."""
+    "DM" picks direct messages), compared case-insensitively. text: only
+    rows whose From or Message contains it (case-insensitive)."""
     if mesh and m["mesh"] != mesh:
         return False
     if channel and channel_text(m).lower() != channel.lower():
         return False
-    return not (text_only and m["kind"] not in TEXT_KINDS)
+    if text_only and m["kind"] not in TEXT_KINDS:
+        return False
+    if text:
+        needle = text.lower()
+        if needle not in from_text(m).lower() and needle not in (m.get("text") or "").lower():
+            return False
+    return True
 
 
 def channel_choices(rows, subscribed=()):

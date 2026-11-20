@@ -10,25 +10,34 @@ import time
 
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QSizePolicy,
+    QSplitter,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ...core.rtlsdr import SweepWaterfallWorker, rtlsdr_device_count
 from ...core.waterfall_model import NOISE_HEADROOM_DB, ROWS_PER_SECOND, SCALE_SPAN_DB, WaterfallModel
-from ..theme import ACCENT, DANGER_HOVER_BORDER, DIM, INK, LINE, LINE_SOFT, LOG_WARN, PANEL, TXT, pick_mono_font
-from .common import section_label
+from ..theme import ACCENT, DANGER_HOVER_BORDER, DIM, INK, LINE, LOG_WARN, TXT, pick_mono_font
 
 ROW_H = 2
 HEADER_H = 36
 LEGEND_H = 18
 TIME_AXIS_W = 34
 
-# Dark -> logo green -> near white.
+# Black -> deep green -> logo green -> near white (the redesign's waterfall
+# colormap, shared with the RTL-SDR canvas's GREEN_LUT).
 _STOPS = [
-    (0.00, QColor("#000000")),
-    (0.25, QColor("#08240e")),
-    (0.50, QColor("#1f7a0e")),
-    (0.75, QColor(ACCENT)),
-    (1.00, QColor("#f2ffd8")),
+    (0.00, QColor(0, 0, 0)),
+    (0.32, QColor(2, 22, 9)),
+    (0.55, QColor(10, 80, 22)),
+    (0.78, QColor(57, 230, 20)),
+    (1.00, QColor(225, 255, 205)),
 ]
 _MARKER_COLORS = {"ok": QColor("#ffffff"), "crc": QColor(LOG_WARN), "partial": QColor(DANGER_HOVER_BORDER)}
 
@@ -200,57 +209,85 @@ class WaterfallPanel(QWidget):
     RETRY_AFTER_ERROR_S = 30
     EDGE_MARGIN_HZ = 100_000  # shown either side of the outermost channels
 
-    def __init__(self, parent=None):
+    # Signal/noise graph width (px) the user dragged the splitter to.
+    graph_width_changed = Signal(int)
+    gain_changed = Signal(object)  # dB, or None for tuner AGC
+
+    GRAPH_WIDTH = 380
+    GAINS = (("Gain AGC", None), ("Gain 20 dB", 20.0), ("Gain 30 dB", 30.0), ("Gain 40 dB", 40.0),
+             ("Gain 49 dB", 49.6))
+
+    def __init__(self, parent=None, graph_width=None, gain_db=None):
         super().__init__(parent)
-        self.setObjectName("waterfallPanel")
+        self.setObjectName("rfBand")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         mono = pick_mono_font()
+        self._mono = mono
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setContentsMargins(12, 8, 12, 10)
         layout.setSpacing(6)
 
+        # Header: RF · source/range · radio pill(s) · stretch · mode · gain.
         header = QHBoxLayout()
-        header.addWidget(section_label("RADIO"))
+        header.setSpacing(10)
+        rf = QLabel("RF")
+        rf.setStyleSheet(f"font-family: '{mono}'; font-size: 11px; font-weight: 600; color: {ACCENT};")
+        header.addWidget(rf)
         self.source_label = QLabel("")
-        self.source_label.setStyleSheet(f"font-family: '{mono}'; font-size: 10px; color: {DIM};")
+        self.source_label.setStyleSheet(f"font-family: '{mono}'; font-size: 11px; color: {DIM};")
         header.addWidget(self.source_label)
+        # One status pill per radio: is it there, listening, and to what.
+        self.radio_row = QHBoxLayout()
+        self.radio_row.setSpacing(6)
+        header.addLayout(self.radio_row)
+        self._radio_chips = []
         header.addStretch(1)
         self.mode_label = QLabel("")
-        self.mode_label.setStyleSheet(f"font-family: '{mono}'; font-size: 10px; color: {DIM};")
+        self.mode_label.setStyleSheet(f"font-family: '{mono}'; font-size: 11px; color: {DIM};")
         header.addWidget(self.mode_label)
+        self.gain_combo = QComboBox()
+        for label, value in self.GAINS:
+            self.gain_combo.addItem(label, value)
+        idx = next((i for i, (_, v) in enumerate(self.GAINS) if v == gain_db), 0)
+        self.gain_combo.setCurrentIndex(idx)
+        self.gain_combo.setFixedHeight(22)
+        self.gain_combo.setStyleSheet(f"font-family: '{mono}'; font-size: 11px; padding: 0 8px; border-radius: 7px;")
+        self.gain_combo.setToolTip("RTL-SDR tuner gain")
+        self.gain_combo.currentIndexChanged.connect(self._on_gain_changed)
+        self.gain_combo.setVisible(False)  # only with an RTL-SDR running
+        header.addWidget(self.gain_combo)
         layout.addLayout(header)
 
-        # One status chip per radio: is it there, listening, and to what.
-        self.radio_row = QHBoxLayout()
-        self.radio_row.setSpacing(8)
-        self.radio_row.addStretch(1)
-        layout.addLayout(self.radio_row)
-        self._radio_chips = []
-        self._mono = mono
-
-        # Waterfall (sniffer RSSI or real RTL-SDR) on the left, the
-        # noise-floor-over-time graph on the right; equal stretch so each
-        # gets half the width.
-        from .sdr_waterfall import WaterfallCanvas
+        # Waterfall (sniffer RSSI or real RTL-SDR) | signal/noise graph, in a
+        # splitter; the graph starts at GRAPH_WIDTH and keeps what it's
+        # dragged to.
+        from .sdr_waterfall import GREEN_LUT, WaterfallCanvas
         from .sniffer_stats import NoiseGraph
 
-        body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(8)
         self.view = WaterfallView()
-        self.sdr_canvas = WaterfallCanvas(spectrum_height=56)
+        self.sdr_canvas = WaterfallCanvas(spectrum_height=40, font_px=9, axis_height=14, lut=GREEN_LUT,
+                                          trace_color=LOG_WARN, trace_fill=True)
         self.sdr_canvas.setMinimumHeight(0)
         self.sdr_canvas.idle_text = "starting RTL-SDR…"
         self.wf_stack = QStackedWidget()
         self.wf_stack.addWidget(self.view)
         self.wf_stack.addWidget(self.sdr_canvas)
-        for widget in (self.wf_stack, self.view, self.sdr_canvas):
+        for widget in (self.view, self.sdr_canvas):
             widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
-        body.addWidget(self.wf_stack, stretch=1)
+        self.wf_stack.setMinimumWidth(200)
         self.noise_graph = NoiseGraph()
-        self.noise_graph.setMinimumWidth(0)
-        self.noise_graph.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
-        body.addWidget(self.noise_graph, stretch=1)
-        layout.addLayout(body, stretch=1)
+        self.noise_graph.setMinimumWidth(160)
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(1)
+        self.splitter.addWidget(self.wf_stack)
+        self.splitter.addWidget(self.noise_graph)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
+        self._graph_width = graph_width or self.GRAPH_WIDTH
+        self._graph_width_applied = False
+        self.splitter.splitterMoved.connect(self._on_splitter_moved)
+        layout.addWidget(self.splitter, stretch=1)
 
         # RTL-SDR state.
         self._profiles = []
@@ -267,6 +304,34 @@ class WaterfallPanel(QWidget):
         self._poll_timer.start(self.POLL_MS)
         self._show_source()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._graph_width_applied and self.splitter.width() > 0:
+            self._apply_graph_width()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_graph_width()
+
+    def _apply_graph_width(self):
+        total = self.splitter.width() - self.splitter.handleWidth()
+        if total <= 0:
+            return
+        graph = min(self._graph_width, max(160, total - 200))
+        self.splitter.setSizes([total - graph, graph])
+        self._graph_width_applied = True
+
+    def _on_splitter_moved(self, *_):
+        self._graph_width = self.splitter.sizes()[1]
+        self.graph_width_changed.emit(self._graph_width)
+
+    def _on_gain_changed(self, *_):
+        gain = self.gain_combo.currentData()
+        self.gain_changed.emit(gain)
+        if self._sdr_worker is not None:
+            self._stop_sdr()
+            self._poll_sdr()
+
     # ---- sniffer feed ------------------------------------------------------
 
     def set_profiles(self, profiles):
@@ -281,11 +346,12 @@ class WaterfallPanel(QWidget):
         self.view.set_profiles(profiles)
         radios = self.view.model.radio_count()
         if radios > 1:
-            self.mode_label.setText(f"{radios} radios · {len(profiles)} profiles · highlighted = listening now")
+            self.mode_label.setText(f"{radios} radios · {len(profiles)} profiles")
         elif len(profiles) == 1:
-            self.mode_label.setText("fixed · listening continuously")
-        else:
-            self.mode_label.setText(f"hopping {len(profiles)} profiles · highlighted = listening now")
+            self.mode_label.setText("Fixed · listening continuously")
+        elif profiles:
+            self.mode_label.setText(f"Hop · {len(profiles)} profiles · highlighted = listening now")
+        self._show_source()
 
     def set_radios(self, radios):
         while len(self._radio_chips) > len(radios):
@@ -295,8 +361,8 @@ class WaterfallPanel(QWidget):
         while len(self._radio_chips) < len(radios):
             chip = QLabel()
             chip.setStyleSheet(
-                f"font-family: '{self._mono}'; font-size: 11px; color: {TXT}; background: {PANEL};"
-                f" border: 1px solid {LINE_SOFT}; border-radius: 6px; padding: 3px 8px;"
+                f"font-family: '{self._mono}'; font-size: 11px; color: {TXT}; background: transparent;"
+                f" border: 1px solid {LINE}; border-radius: 9px; padding: 1px 8px;"
             )
             self.radio_row.insertWidget(len(self._radio_chips), chip)
             self._radio_chips.append(chip)
@@ -379,6 +445,7 @@ class WaterfallPanel(QWidget):
             lo, hi,
             on_row=lambda row: self._sdr_row.emit((gen, row)),
             on_error=lambda msg: self._sdr_error.emit((gen, msg)),
+            gain_db=self.gain_combo.currentData(),
         )
         # A multi-segment sweep only manages ~3 rows/s: draw those taller.
         self.sdr_canvas.row_px = 2 if len(worker.centers) > 1 else 1
@@ -423,11 +490,15 @@ class WaterfallPanel(QWidget):
         self._show_source()
 
     def _show_source(self):
-        if self._sdr_worker is not None:
-            text, color = "· RTL-SDR spectrum", ACCENT
+        worker = self._sdr_worker
+        if worker is not None:
+            lo = (worker.center_hz - worker.span_hz / 2) / 1e6
+            hi = (worker.center_hz + worker.span_hz / 2) / 1e6
+            text = f"RTL-SDR · {lo:.3f} – {hi:.3f} MHz"
         elif self._live:
-            text, color = "· sniffer RSSI (no RTL-SDR)", DIM
+            text = f"sniffer RSSI · {len(self._profiles)} profile" + ("" if len(self._profiles) == 1 else "s")
+            text += " · no RTL-SDR"
         else:
-            text, color = "", DIM
+            text = ""
         self.source_label.setText(text)
-        self.source_label.setStyleSheet(f"font-family: '{self._mono}'; font-size: 10px; color: {color};")
+        self.gain_combo.setVisible(worker is not None)

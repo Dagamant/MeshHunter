@@ -11,7 +11,7 @@ from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
-from ..theme import ACCENT, DIM, LINE, TERMINAL_BG, TERMINAL_DIVIDER, pick_mono_font
+from ..theme import ACCENT, ACCENT_LIGHT, DIM, LINE, TERMINAL_BG, TERMINAL_DIVIDER, pick_mono_font
 from .common import section_label
 
 HISTORY_ROWS = 400
@@ -37,16 +37,36 @@ def _build_lut():
 _LUT = _build_lut()
 
 
+def _build_green_lut():
+    """The desktop redesign's colormap: black -> deep green -> logo green
+    -> near white, matching the rest of the UI."""
+    stops = [(0.00, (0, 0, 0)), (0.32, (2, 22, 9)), (0.55, (10, 80, 22)), (0.78, (57, 230, 20)),
+             (1.00, (225, 255, 205))]
+    x = np.linspace(0, 1, 256)
+    pos = [t for t, _ in stops]
+    rgb = np.stack([np.interp(x, pos, [c[i] for _, c in stops]) for i in range(3)], axis=1).astype(np.uint32)
+    return (0xFF << 24) | (rgb[:, 0] << 16) | (rgb[:, 1] << 8) | rgb[:, 2]
+
+
+GREEN_LUT = _build_green_lut()
+
+
 class WaterfallCanvas(QWidget):
-    def __init__(self, parent=None, font_px=10, spectrum_height=SPECTRUM_HEIGHT, row_px=1):
+    def __init__(self, parent=None, font_px=10, spectrum_height=SPECTRUM_HEIGHT, row_px=1, axis_height=None,
+                 lut=None, trace_color="#ffe14d", trace_fill=False):
         super().__init__(parent)
+        self.lut = _LUT if lut is None else lut
+        self.trace_color = trace_color
+        self.trace_fill = trace_fill
+        # Desktop redesign style (trace_fill) uses dim axis labels.
+        self.axis_text_color = DIM if trace_fill else "#ffffff"
         # Pixels per waterfall row: >1 for slow feeds (e.g. a multi-segment
         # sweep) so the picture isn't a thin sliver.
         self.row_px = row_px
         self.setMinimumHeight(160)
         # Bigger labels / a shorter spectrum strip for the 640x480 pocket UI.
         self.font_px = font_px
-        self.axis_height = font_px + 8
+        self.axis_height = axis_height or font_px + 8
         self.spectrum_height = spectrum_height
         self._mono = pick_mono_font()
         self._rows = None  # (HISTORY_ROWS, bins) uint8 colour indices, newest first
@@ -113,7 +133,7 @@ class WaterfallCanvas(QWidget):
         wf_rect = QRectF(0, wf_top, w, h - wf_top)
 
         if self._rows is not None:
-            img_data = np.ascontiguousarray(_LUT[self._rows])
+            img_data = np.ascontiguousarray(self.lut[self._rows])
             img = QImage(img_data.data, img_data.shape[1], img_data.shape[0], img_data.shape[1] * 4, QImage.Format_ARGB32)
             # One image row per pixel; rows not yet received stay
             # background rather than showing the colormap's lowest colour.
@@ -130,7 +150,16 @@ class WaterfallCanvas(QWidget):
             path.moveTo(xs[0], ys[0])
             for x, y in zip(xs[1:], ys[1:]):
                 path.lineTo(x, y)
-            p.setPen(QPen(QColor("#ffe14d"), 2))
+            if self.trace_fill:
+                area = QPainterPath(path)
+                base = spec_top + self.spectrum_height
+                area.lineTo(xs[-1], base)
+                area.lineTo(xs[0], base)
+                area.closeSubpath()
+                fill = QColor(self.trace_color)
+                fill.setAlphaF(0.08)
+                p.fillPath(area, fill)
+            p.setPen(QPen(QColor(self.trace_color), 1.2 if self.trace_fill else 2))
             p.drawPath(path)
 
         # LoRa channel band(s)
@@ -167,7 +196,7 @@ class WaterfallCanvas(QWidget):
             x = self._freq_to_x(f, w)
             p.setPen(QColor("#9aa59a"))
             p.drawLine(int(x), self.axis_height - 4, int(x), self.axis_height)
-            p.setPen(QColor("#ffffff"))
+            p.setPen(QColor(self.axis_text_color))
             p.drawText(QRectF(x - 50, 0, 100, self.axis_height - 4), Qt.AlignCenter, f"{f / 1e6:.3f}")
             f += step
 
@@ -177,31 +206,33 @@ class WaterfallCanvas(QWidget):
         p.end()
 
     def _paint_channels(self, p, w, h, spec_top):
-        """A shaded band per channel over the spectrum, faint edge lines down
-        the waterfall, and its name; the one(s) being listened to now are
-        drawn in the accent colour."""
+        """A band per channel across the spectrum and waterfall. The one(s)
+        being listened to now: dashed green edges, faint green fill and a
+        "name freq" tag; the rest are drawn fainter in white."""
         font = p.font()
         font.setFamily(self._mono)
-        font.setPixelSize(max(8, self.font_px - 1))
+        font.setPixelSize(max(8, self.font_px))
         p.setFont(font)
         for i, (center, bw, label) in enumerate(self.channels):
             live = i in self.active
-            color = QColor(ACCENT if live else "#ffffff")
             x0 = self._freq_to_x(center - bw / 2, w)
             x1 = max(x0 + 2, self._freq_to_x(center + bw / 2, w))
-            band = QColor(color)
-            band.setAlpha(70 if live else 30)
-            p.fillRect(QRectF(x0, spec_top, x1 - x0, self.spectrum_height), band)
-            edge = QColor(color)
-            edge.setAlpha(150 if live else 60)
+            if live:
+                fill, edge, text = QColor(57, 255, 20, 15), QColor(57, 255, 20, 178), QColor(ACCENT_LIGHT)
+            else:
+                fill, edge, text = QColor(255, 255, 255, 8), QColor(255, 255, 255, 64), QColor(DIM)
+            p.fillRect(QRectF(x0, spec_top, x1 - x0, h - spec_top), fill)
             p.setPen(QPen(edge, 1, Qt.DashLine))
             p.drawLine(int(x0), spec_top, int(x0), h)
             p.drawLine(int(x1), spec_top, int(x1), h)
-            # Centred on the band but kept fully on screen.
-            p.setPen(color)
-            tw = p.fontMetrics().horizontalAdvance(label)
-            tx = min(max(2, (x0 + x1) / 2 - tw / 2), w - tw - 2)
-            p.drawText(QRectF(tx, spec_top + 2, tw + 2, self.font_px + 4), Qt.AlignLeft | Qt.AlignTop, label)
+            tag = f"{label} {center / 1e6:.3f}"
+            tw = p.fontMetrics().horizontalAdvance(tag) + 8
+            th = self.font_px + 5
+            tx = min(max(1, (x0 + x1) / 2 - tw / 2), w - tw - 1)
+            box = QRectF(tx, spec_top + 2, tw, th)
+            p.fillRect(box, QColor(0, 0, 0, 178))
+            p.setPen(text)
+            p.drawText(box, Qt.AlignCenter, tag)
 
 
 class WaterfallView(QWidget):

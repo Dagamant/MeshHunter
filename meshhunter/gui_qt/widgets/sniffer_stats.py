@@ -15,7 +15,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
-from ..theme import ACCENT, DIM, INK, LINE, LINE_SOFT, PANEL, pick_mono_font
+from ..theme import ACCENT, DIM, LINE, LINE_SOFT, PANEL, TERMINAL_BG, TXT, pick_mono_font
 from .common import section_label
 from .stat_tile import StatTile
 
@@ -77,81 +77,99 @@ class NoiseGraph(QWidget):
 
     def paintEvent(self, event):
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor(INK))
-        p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = self.width(), self.height()
+        p.fillRect(self.rect(), QColor(TERMINAL_BG))
+        p.fillRect(QRectF(0, 0, 1, h), QColor(LINE_SOFT))
         small = QFont(self._mono)
-        small.setPixelSize(10)
+        small.setPixelSize(9)
+        head = QFont(self._mono)
+        head.setPixelSize(11)
+
+        # Header: title + legend.
+        p.setFont(head)
+        p.setPen(QColor(ACCENT))
+        head.setWeight(QFont.DemiBold)
+        p.setFont(head)
+        p.drawText(QRectF(10, 0, w, 18), Qt.AlignLeft | Qt.AlignVCenter, "SIGNAL / NOISE")
         p.setFont(small)
+        fm = p.fontMetrics()
+        x = w - 8 - fm.horizontalAdvance("floor")
+        p.setPen(QColor(DIM))
+        p.drawText(QRectF(x, 0, 60, 18), Qt.AlignLeft | Qt.AlignVCenter, "floor")
+        p.fillRect(QRectF(x - 16, 8, 12, 2), QColor(ACCENT))
+        x -= 24 + fm.horizontalAdvance("packet")
+        p.drawText(QRectF(x, 0, 60, 18), Qt.AlignLeft | Qt.AlignVCenter, "packet")
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(TXT))
+        p.drawEllipse(QPointF(x - 7, 9), 2.5, 2.5)
+        p.setBrush(Qt.NoBrush)
 
         now = time.monotonic()
         cutoff = now - _WINDOW_S
         while self._dots and self._dots[0][0] < cutoff:
             self._dots.popleft()
 
-        floor_dbm = [v for s in self._series.values() for _, v in s]
-        dot_dbm = [d for _, d, _ in self._dots]
-        if not floor_dbm and not dot_dbm:
-            p.setPen(QColor(DIM))
-            p.drawText(self.rect(), Qt.AlignCenter, "noise\nfloor")
-            return
-
-        w, h = self.width(), self.height()
-        pad_l, pad_r, pad_t, pad_b = 30, 16, 16, 14
+        pad_l, pad_r, pad_t, pad_b = 34, 10, 24, 16
         plot = QRectF(pad_l, pad_t, w - pad_l - pad_r, h - pad_t - pad_b)
 
+        floor_dbm = [v for s in self._series.values() for _, v in s]
+        dot_dbm = [d for _, d, _ in self._dots]
         vals = floor_dbm + dot_dbm
-        lo = min(vals)
-        hi = max(vals)
-        lo, hi = min(lo, hi - 10), max(hi, lo + 10)  # at least a 10 dB span
-        lo = max(_FLOOR_MIN_DB, lo - 3)
-        hi = min(_FLOOR_MAX_DB, hi + 3)
-        if hi <= lo:
-            hi = lo + 10
+        # Fixed -110..-30 dBm, widened only if something falls outside it.
+        lo = min([-110.0] + [v - 3 for v in vals])
+        hi = max([-30.0] + [v + 3 for v in vals])
+        lo, hi = max(_FLOOR_MIN_DB, lo), min(_FLOOR_MAX_DB + 10, hi)
 
         def xy(t, dbm):
             fx = 1.0 - min(1.0, (now - t) / _WINDOW_S)
             fy = (dbm - lo) / (hi - lo)
-            return QPointF(plot.left() + fx * plot.width(),
-                           plot.bottom() - fy * plot.height())
+            return QPointF(plot.left() + fx * plot.width(), plot.bottom() - fy * plot.height())
 
-        # Grid + dBm labels (top, middle, bottom).
-        p.setPen(QColor(LINE_SOFT))
-        for frac in (0.0, 0.5, 1.0):
-            y = plot.bottom() - frac * plot.height()
-            p.drawLine(int(plot.left()), int(y), int(plot.right()), int(y))
-            p.setPen(QColor(DIM))
-            p.drawText(QRectF(0, y - 7, pad_l - 3, 14), Qt.AlignRight | Qt.AlignVCenter,
-                       f"{lo + frac * (hi - lo):.0f}")
-            p.setPen(QColor(LINE_SOFT))
-
+        # Y axis labels (top/mid/bottom) and a dashed midline; x axis labels.
+        p.setRenderHint(QPainter.Antialiasing, False)
         p.setPen(QColor(DIM))
-        p.drawText(QRectF(0, 0, w, pad_t), Qt.AlignHCenter | Qt.AlignVCenter, "SIGNAL · NOISE dBm")
+        for frac in (1.0, 0.5, 0.0):
+            y = plot.bottom() - frac * plot.height()
+            p.drawText(QRectF(0, y - 7, pad_l - 5, 14), Qt.AlignRight | Qt.AlignVCenter, f"{lo + frac * (hi - lo):.0f}")
+        mid = plot.center().y()
+        p.setPen(QPen(QColor(LINE_SOFT), 1, Qt.DashLine))
+        p.drawLine(QPointF(plot.left(), mid), QPointF(plot.right(), mid))
+        p.setPen(QColor(LINE_SOFT))
+        p.drawLine(QPointF(plot.left(), plot.bottom()), QPointF(plot.right(), plot.bottom()))
+        p.setPen(QColor(DIM))
+        ax = QRectF(plot.left(), plot.bottom() + 2, plot.width(), pad_b - 2)
+        p.drawText(ax, Qt.AlignLeft | Qt.AlignVCenter, "−10 min")
+        p.drawText(ax, Qt.AlignHCenter | Qt.AlignVCenter, "−5")
+        p.drawText(ax, Qt.AlignRight | Qt.AlignVCenter, "now")
 
+        if not vals:
+            p.drawText(plot, Qt.AlignCenter, "waiting for sniffer telemetry")
+            return
+
+        p.setRenderHint(QPainter.Antialiasing, True)
         for label in self._order:
             series = self._series.get(label) or ()
             if not series:
                 continue
-            p.setPen(QPen(self._color(label), 1.4))
+            p.setPen(QPen(self._color(label), 1.2))
             prev = None
             for t, dbm in series:
                 cur = xy(t, dbm)
                 if prev is not None:
                     p.drawLine(prev, cur)
                 prev = cur
-            if prev is not None:
-                p.fillRect(QRectF(prev.x() - 1.5, prev.y() - 1.5, 3, 3), self._color(label))
 
-        # Received-packet dots, on top of the noise line: each sits at its own
-        # RSSI, so the gap up from the line is how far it rose above the floor.
-        p.setPen(Qt.NoPen)
+        # Received packets: small squares at their RSSI, so the gap up from
+        # the floor line is how far each rose above the noise.
+        p.setRenderHint(QPainter.Antialiasing, False)
         for t, dbm, kind in self._dots:
             if t < cutoff:
                 continue
             c = xy(t, dbm)
             if plot.left() - 1 <= c.x() <= plot.right() + 1:
-                p.setBrush(_DOT_COLORS.get(kind, _DOT_COLORS["ok"]))
-                p.drawEllipse(c, 1.8, 1.8)
-        p.setBrush(Qt.NoBrush)
+                color = QColor(TXT) if kind == "ok" else _DOT_COLORS.get(kind, _DOT_COLORS["ok"])
+                p.fillRect(QRectF(c.x() - 1.2, c.y() - 1.2, 2.4, 2.4), color)
 
 
 class SnifferStatsBar(QWidget):
