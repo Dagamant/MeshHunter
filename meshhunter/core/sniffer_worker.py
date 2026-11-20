@@ -31,6 +31,7 @@ import json
 import queue
 import threading
 import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 
@@ -105,6 +106,9 @@ def open_radio_port(port):
         raise
 
 
+# Noise floor = low percentile of this many stat readings (~5 s apart).
+NOISE_FLOOR_SAMPLES = 6
+
 class _RadioFailed(Exception):
     pass
 
@@ -125,6 +129,8 @@ class _RadioLink:
         self.detail = ""
         self.kind = "USB stick" if parse_device_selection(port)[0] == "usb_radio" else "XIAO"
         self.noise = None
+        # Recent raw "nf" readings; see SnifferWorker._noise_floor.
+        self.nf_samples = deque(maxlen=NOISE_FLOOR_SAMPLES)
         self.thread = threading.Thread(target=self._run, name=f"sniffer-{self.label}", daemon=True)
 
     def _post(self, msg):
@@ -406,8 +412,8 @@ class SnifferWorker:
                 elif ev == "rs":
                     self._on_rssi(msg, link)
                 elif ev == "stat":
-                    nf = msg.get("nf")
-                    if nf is not None and nf > -127 and (link.noise is None or round(nf) != round(link.noise)):
+                    nf = self._noise_floor(msg, link)
+                    if nf is not None and (link.noise is None or round(nf) != round(link.noise)):
                         link.noise = nf
                         self._radios_changed()
                     self._on_stat(msg, link)
@@ -430,6 +436,7 @@ class SnifferWorker:
         link.state, link.detail = state, detail
         if state not in ("listening", "idle"):
             link.noise = None
+            link.nf_samples.clear()
         self._radios_changed()
 
     def _radios_changed(self):
@@ -556,6 +563,23 @@ class SnifferWorker:
         who = f"radio={link.label} " if self.multi else ""
         self._event_log("RX_PARTIAL", f"{who}kind={msg.get('kind')} prof={pname!r} rssi={msg.get('rssi')}")
 
+    @staticmethod
+    def _noise_floor(msg, link):
+        """The firmware's "nf" is a single instantaneous RSSI read when the
+        stat line is printed, so it reads a packet's RSSI whenever one is on
+        the air at that moment. Packets only ever push a reading up, so take
+        a low percentile (the 2nd lowest of the last 6) rather than the
+        latest: packets don't spike the floor unless nearly every reading
+        caught one. Readings <= -127 are the firmware's "not measured yet"
+        sentinel."""
+        nf = msg.get("nf")
+        if nf is not None and nf > -127:
+            link.nf_samples.append(float(nf))
+        if not link.nf_samples:
+            return None
+        ordered = sorted(link.nf_samples)
+        return ordered[len(ordered) // 4]
+
     def _on_stat(self, msg, link):
         """Radio telemetry (noise floor, per-profile RX counters, hop count),
         sent ~every 5 s. These used to be a SNIFF_STAT line in the terminal;
@@ -573,11 +597,7 @@ class SnifferWorker:
                 "name": prof.name if prof else f"p{pid}",
                 "ok": ok, "bad": bad, "pre": pre, "listen_s": listen_ms // 1000,
             })
-        # Until the radio has a real noise floor it reports a sentinel
-        # (<= -127); gate it so the graph/stats stay blank rather than
-        # plotting that bogus pre-measurement value.
-        nf = msg.get("nf")
-        noise = nf if nf is not None and nf > -127 else None
+        noise = link.noise
         self.ui_queue.put(("sniffer_stat", {
             "radio": link.label,
             "multi": self.multi,

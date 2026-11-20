@@ -11,7 +11,7 @@ inspector) and compact=True for the 640x480 pocket layout.
 """
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QRectF, QSortFilterProxyModel, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -61,6 +61,18 @@ MESH_COLORS = {"meshcore": QColor(MESH_MESHCORE), "meshtastic": QColor(MESH_MESH
 MESH_SHORT = {"meshcore": "MC", "meshtastic": "MT"}
 ROW_PAD = 12  # row padding left/right
 CELL_GAP = 8
+ROW_HEIGHT = 24  # single-line desktop row
+MAX_LINES = 10  # taller messages are cut off here (the inspector shows all of it)
+
+
+def message_lines(m):
+    """The message text split into display lines, capped at MAX_LINES (the
+    last kept line gets an ellipsis when more were dropped)."""
+    lines = (m.get("text") or "").splitlines() or [""]
+    if len(lines) > MAX_LINES:
+        lines = lines[:MAX_LINES]
+        lines[-1] += " …"
+    return lines
 
 
 class MessageModel(QAbstractTableModel):
@@ -216,7 +228,8 @@ class MessageRowDelegate(QStyledItemDelegate):
         last = col == self._last_visible()
         left = rect.left() + (ROW_PAD if first else CELL_GAP // 2)
         right = rect.right() - (ROW_PAD if last else CELL_GAP // 2)
-        inner = QRectF(left, rect.top(), max(0, right - left), rect.height())
+        # Every cell lines up with the first line of a multi-line message.
+        inner = QRectF(left, rect.top(), max(0, right - left), min(rect.height(), ROW_HEIGHT))
         m = row_message(index)
 
         if col == COL_MESH:
@@ -230,10 +243,17 @@ class MessageRowDelegate(QStyledItemDelegate):
                 color = QColor(ACCENT)
             p.setFont(font)
             p.setPen(color)
-            text = model.data(index, Qt.DisplayRole) or ""
             align = model.data(index, Qt.TextAlignmentRole) or int(Qt.AlignLeft | Qt.AlignVCenter)
-            text = p.fontMetrics().elidedText(text, Qt.ElideRight, int(inner.width()))
-            p.drawText(inner, int(align), text)
+            fm = p.fontMetrics()
+            if col == COL_MESSAGE:
+                lines = message_lines(m)
+            else:
+                lines = [(model.data(index, Qt.DisplayRole) or "").replace("\n", " ")]
+            line_rect = QRectF(inner)
+            for i, line in enumerate(lines):
+                if i:
+                    line_rect.translate(0, fm.lineSpacing())
+                p.drawText(line_rect, int(align), fm.elidedText(line, Qt.ElideRight, int(inner.width())))
         p.restore()
 
     def _first_visible(self):
@@ -500,7 +520,25 @@ class MessagePanel(QWidget):
             view.setColumnHidden(col, True)
         view.selectionModel().currentRowChanged.connect(self._on_current_changed)
         self.view = view
+        self._row_height = 22 if compact else ROW_HEIGHT
+        self.proxy.rowsInserted.connect(lambda _parent, first, last: self._fit_rows(first, last))
+        self.proxy.layoutChanged.connect(lambda *_: self._fit_rows())
+        self.proxy.modelReset.connect(lambda: self._fit_rows())
+        self.proxy.dataChanged.connect(lambda tl, br, *_: self._fit_rows(tl.row(), br.row()))
         return view
+
+    def _fit_rows(self, first=0, last=None):
+        """Grow rows whose message has line breaks so every line shows
+        (rows are a fixed single-line height otherwise)."""
+        if last is None:
+            last = self.proxy.rowCount() - 1
+        line = QFontMetrics(self.model._font).lineSpacing()
+        for row in range(first, last + 1):
+            m = row_message(self.proxy.index(row, 0))
+            extra = len(message_lines(m)) - 1
+            height = self._row_height + extra * line
+            if self.view.rowHeight(row) != height:
+                self.view.setRowHeight(row, height)
 
     # ---- selection -------------------------------------------------------------
 
