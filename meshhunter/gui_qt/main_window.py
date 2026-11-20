@@ -219,6 +219,7 @@ class MainWindow(QMainWindow):
 
         ui = self.config_data
         self.waterfall_panel = WaterfallPanel(graph_width=ui.get("ui_rf_graph_width"), gain_db=ui.get("sdr_gain"))
+        self.waterfall_panel.radio_pills_when_multi = False
         self.waterfall_view = WaterfallView()  # LoRa HAT's own RTL-SDR view
         self.rf_stack = QStackedWidget()
         self.rf_stack.addWidget(self.waterfall_panel)
@@ -417,6 +418,7 @@ class MainWindow(QMainWindow):
         self.message_panel.message_selected.connect(self._on_message_selected)
         self.message_panel.message_updated.connect(self._on_message_updated)
         self.inspector.closed.connect(self._close_inspector)
+        self.bridge.sniffer_radios.connect(self._on_sniffer_radios)
         self.serial_drawer.toggled.connect(self._on_serial_toggled)
         self.waterfall_panel.graph_width_changed.connect(lambda w: self._remember("ui_rf_graph_width", w))
         self.waterfall_panel.gain_changed.connect(lambda g: self._remember("sdr_gain", g))
@@ -542,11 +544,30 @@ class MainWindow(QMainWindow):
     def _on_sniffer_profiles(self, payload):
         self.waterfall_panel.set_profiles(payload)
         self._set_waterfall_visible(True)
+        self._profile_families = {p["name"]: p.get("family", "") for p in payload}
+        self._show_radios()
 
     def _on_sniffer_stat(self, payload):
         bar = getattr(self, "sniffer_stats", None)
         if bar is not None:
             bar.add_stat(payload)
+        self._show_radio_rx(payload.get("radio") or "", payload.get("ok"))
+
+    def _on_sniffer_radios(self, radios):
+        self._radios = list(radios)
+        self._show_radios()
+
+    def _show_radios(self):
+        """Multi-radio (redesign 1d): a chip per radio in the top bar and
+        Radio/Profile columns in the messages. Overridden by PocketMainWindow."""
+        radios = getattr(self, "_radios", [])
+        self.top_bar.radios.set_radios(radios, getattr(self, "_profile_families", {}))
+        self.message_panel.set_radio_numbers({r["label"]: n for n, r in enumerate(radios, start=1)})
+
+    def _show_radio_rx(self, label, count):
+        """Overridden by PocketMainWindow."""
+        if count is not None:
+            self.top_bar.radios.set_rx(label, count)
 
     def _set_waterfall_visible(self, visible):
         """Show/hide the RF band. Overridden by PocketMainWindow, where the
@@ -563,6 +584,7 @@ class MainWindow(QMainWindow):
             self.stats_strip.start_session()
         else:
             self.stats_strip.stop_session()
+            self._on_sniffer_radios([])  # disconnected: no radio chips
 
     def _on_wdgwars_sent(self, payload):
         self.wdgwars_sent_total += payload

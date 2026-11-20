@@ -152,6 +152,12 @@ class PocketMainWindow(MainWindow):
     def _session_timer(self, running):
         pass
 
+    def _show_radios(self):
+        pass
+
+    def _show_radio_rx(self, label, count):
+        pass
+
     def _toggle_serial_drawer(self):
         pass
 

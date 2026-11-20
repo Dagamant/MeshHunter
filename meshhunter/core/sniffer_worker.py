@@ -343,7 +343,8 @@ class SnifferWorker:
         if self._thread is not None:
             self._radios_changed()
         self.ui_queue.put(("sniffer_profiles", [
-            {"name": p.name, "freq": p.freq, "bw": p.bw, "sf": p.sf, "radio": link.label if self.multi else ""}
+            {"name": p.name, "freq": p.freq, "bw": p.bw, "sf": p.sf, "family": p.family,
+             "radio": link.label if self.multi else ""}
             for p, link in profiles
         ]))
 
@@ -537,6 +538,7 @@ class SnifferWorker:
             self._on_meshcore(d, rssi)
             m = meshcore_message(d, source, profile=pname, raw=raw)
             m["profile_label"] = profile.label() if profile else pname
+            m["radio"] = link.label if self.multi else ""
             self.ui_queue.put(("message", m))
         elif sync == SYNC_MESHTASTIC:
             d = decode_meshtastic(raw, self.mt_channels)
@@ -550,6 +552,7 @@ class SnifferWorker:
             m["source"] = source
             m["raw_hex"] = raw.hex()
             m["profile_label"] = profile.label() if profile else pname
+            m["radio"] = link.label if self.multi else ""
             self.ui_queue.put(("message", m))
         else:
             self._write_raw(record)

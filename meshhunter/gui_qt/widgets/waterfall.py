@@ -300,6 +300,15 @@ class WaterfallPanel(QWidget):
         self._graph_width = graph_width or self.GRAPH_WIDTH
         self._graph_width_applied = False
         self.splitter.splitterMoved.connect(self._on_splitter_moved)
+        # Multi-radio: which radio covers which part of the band.
+        from .band_strip import BandStrip
+
+        self.band_strip = BandStrip()
+        self.band_strip.setVisible(False)
+        self._radios = []
+        # Set False by the desktop window, whose top bar has per-radio chips.
+        self.radio_pills_when_multi = True
+        layout.addWidget(self.band_strip)
         layout.addWidget(self.splitter, stretch=1)
 
         # RTL-SDR state.
@@ -371,6 +380,7 @@ class WaterfallPanel(QWidget):
 
     def set_profiles(self, profiles):
         self._profiles = list(profiles)
+        self.band_strip.set_assignments(self._profiles, self._radios)
         self._live = bool(self._profiles)
         self.sdr_canvas.set_channels([
             (p["freq"] * 1e6, p["bw"] * 1e3, p["name"]) for p in self._profiles
@@ -389,6 +399,12 @@ class WaterfallPanel(QWidget):
         self._show_source()
 
     def set_radios(self, radios):
+        self._radios = list(radios)
+        self.band_strip.set_assignments(self._profiles, self._radios)
+        multi = len(radios) > 1
+        self.band_strip.setVisible(multi)
+        if multi and not self.radio_pills_when_multi:
+            radios = []  # the main window's top bar shows a chip per radio instead
         while len(self._radio_chips) > len(radios):
             chip = self._radio_chips.pop()
             self.radio_row.removeWidget(chip)

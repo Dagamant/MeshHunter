@@ -37,6 +37,10 @@ from ..theme import (
     LIVE_PILL_BG,
     LOGO_PATH,
     LOG_WARN,
+    MESH_MESHCORE,
+    MESH_MESHTASTIC,
+    PANEL_2,
+    SWITCH_TRACK_ON,
     TXT,
     pick_mono_font,
     pick_sans_font,
@@ -487,6 +491,138 @@ class SentButton(QToolButton):
         self._pending_sep.setVisible(self.send_wdgwars_action.isVisible() or self.send_ingest_action.isVisible())
 
 
+def short_profile(name):
+    """"Meshtastic LongFast" -> "MT LongFast"."""
+    return name.replace("Meshtastic ", "MT ", 1)
+
+
+def family_color(family):
+    return {"meshcore": MESH_MESHCORE, "meshtastic": MESH_MESHTASTIC}.get(family, TXT)
+
+
+class RadioBadge(QLabel):
+    """18 px radio number badge (multi-radio, redesign 1d)."""
+
+    def __init__(self, number, parent=None):
+        super().__init__(str(number), parent)
+        self.setFixedSize(18, 18)
+        self.setAlignment(Qt.AlignCenter)
+        self.setStyleSheet(f"font-family: '{pick_mono_font()}'; font-size: 10px; font-weight: 700;"
+                           f" color: {ACCENT_LIGHT}; background: {SWITCH_TRACK_ON}; border-radius: 4px;")
+
+
+class RadioChip(QFrame):
+    """[n] ttyACM1  MeshCore US  fixed  214 rx"""
+
+    def __init__(self, number, parent=None):
+        super().__init__(parent)
+        self.setObjectName("radioChip")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setFixedHeight(32)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.setStyleSheet(f"#radioChip {{ background: {PANEL_2}; border: 1px solid {LINE}; border-radius: 8px; }}")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(7, 0, 10, 0)
+        row.setSpacing(7)
+        row.addWidget(RadioBadge(number))
+        self.port = _label("", TXT, 12)
+        self.profile = _label("", TXT, 11)
+        self.state = _label("", DIM, 11)
+        self.rx = _label("", ACCENT, 11)
+        for w in (self.port, self.profile, self.state, self.rx):
+            row.addWidget(w)
+
+    def set_radio(self, radio, families, rx=None):
+        self.port.setText(radio["label"])
+        names = radio.get("profiles") or []
+        if names:
+            self.profile.setText(short_profile(names[0]) + (f" +{len(names) - 1}" if len(names) > 1 else ""))
+            color = family_color(families.get(names[0]))
+        else:
+            self.profile.setText("idle")
+            color = DIM
+        self.profile.setStyleSheet(f"font-family: '{pick_mono_font()}'; font-size: 11px; color: {color};"
+                                   " background: transparent;")
+        listening = radio.get("state") == "listening"
+        self.state.setText(("fixed" if len(names) == 1 else "hopping") if listening and names
+                           else radio.get("state", ""))
+        self.set_rx(rx)
+        self._fit()
+        tip = [f"{radio.get('kind', '')} on {radio.get('port', '')}", f"state: {radio.get('state', '')}"]
+        if radio.get("detail"):
+            tip.append(radio["detail"])
+        if names:
+            tip.append("profiles: " + ", ".join(names))
+        self.setToolTip("\n".join(tip))
+
+    def set_rx(self, rx):
+        self.rx.setText(f"{rx} rx" if rx is not None else "")
+        self.rx.setVisible(rx is not None)
+        self._fit()
+
+    def set_compact(self, compact):
+        self.profile.setVisible(not compact)
+        self.state.setVisible(not compact)
+        self._fit()
+
+    def _fit(self):
+        # Exact width so a crowded bar can't squeeze chips into each other.
+        # Polish first: the labels' font sizes come from their stylesheets.
+        for lbl in (self.port, self.profile, self.state, self.rx):
+            lbl.ensurePolished()
+            lbl.updateGeometry()
+        self.ensurePolished()  # the chip's own border comes from its stylesheet too
+        self.layout().invalidate()
+        self.layout().activate()
+        self.setFixedWidth(self.sizeHint().width())
+
+
+class RadioChips(QWidget):
+    """One RadioChip per sniffer radio; only shown with two or more."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.row = QHBoxLayout(self)
+        self.row.setContentsMargins(0, 0, 0, 0)
+        self.row.setSpacing(6)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.chips = {}
+        self._compact = False
+        self.setVisible(False)
+
+    def set_radios(self, radios, families):
+        rx = {label: chip.rx.text() for label, chip in self.chips.items()}
+        for chip in self.chips.values():
+            self.row.removeWidget(chip)
+            chip.hide()
+            chip.setParent(None)
+            chip.deleteLater()
+        self.chips = {}
+        multi = len(radios) > 1
+        for n, radio in enumerate(radios if multi else [], start=1):
+            chip = RadioChip(n)
+            old = rx.get(radio["label"], "")
+            chip.set_radio(radio, families, int(old.split()[0]) if old else None)
+            chip.set_compact(self._compact)
+            self.row.addWidget(chip)
+            self.chips[radio["label"]] = chip
+        self.setVisible(multi)
+        self.multi_changed(multi)
+
+    def multi_changed(self, multi):
+        """Hook set by TopBar."""
+
+    def set_rx(self, label, count):
+        chip = self.chips.get(label)
+        if chip is not None:
+            chip.set_rx(count)
+
+    def set_compact(self, compact):
+        self._compact = compact
+        for chip in self.chips.values():
+            chip.set_compact(compact)
+
+
 class TopBar(QFrame):
     settings_clicked = Signal()
 
@@ -513,6 +649,9 @@ class TopBar(QFrame):
 
         self.device_chip = DeviceChip()
         row.addWidget(self.device_chip)
+        self.radios = RadioChips()
+        self.radios.multi_changed = self._on_multi
+        row.addWidget(self.radios)
         self.live = LiveBadge()
         row.addWidget(self.live)
         self.connect_button = make_button("Connect", variant="secondary", height=30)
@@ -552,15 +691,32 @@ class TopBar(QFrame):
     def set_compact(self, compact):
         """Small window (redesign 1c): 44 px bar, no wordmark, short device
         chip and GPS, Advertise and Sync as menu buttons."""
+        self._compact = compact
+        multi = getattr(self, "_multi", False)
         self.setFixedHeight(self.COMPACT_HEIGHT if compact else self.HEIGHT)
         self._set_logo(30 if compact else 34)
-        self.wordmark.setVisible(not compact)
+        self.wordmark.setVisible(not compact and not multi)
         self.device_chip.set_compact(compact)
         self.gps.set_compact(compact)
         self.advertise.set_compact(compact)
-        self.sent.set_compact(compact)
+        self.sent.set_compact(compact or multi)
+        self.radios.set_compact(compact)
+
+    def _on_multi(self, multi):
+        # Several sniffers (redesign 1d): the radio chips take the room.
+        # Sniffers can't advertise, the device menu has Disconnect, and the
+        # chip's dot already shows the link, so those go along with the
+        # wordmark; Sync shows its short form.
+        self._multi = multi
+        hat = getattr(self, "_hat", False)
+        compact = getattr(self, "_compact", False)
+        self.advertise.setVisible(not multi and not hat)
+        self.connect_button.setVisible(not multi and not hat)
+        self.wordmark.setVisible(not multi and not compact)
+        self.sent.set_compact(multi or compact)
 
     def set_hat_mode(self, hat):
         """LoRa HAT mode has no device to connect or advertise from."""
-        self.connect_button.setVisible(not hat)
-        self.advertise.setVisible(not hat)
+        self._hat = hat
+        self.connect_button.setVisible(not hat and not getattr(self, "_multi", False))
+        self.advertise.setVisible(not hat and not getattr(self, "_multi", False))

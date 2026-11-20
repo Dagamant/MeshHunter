@@ -40,6 +40,8 @@ from ...core.messages import (
     signal_text,
 )
 from ..theme import (
+    ACCENT_LIGHT,
+    SWITCH_TRACK_ON,
     ACCENT,
     DIM,
     LINE_SOFT,
@@ -57,8 +59,11 @@ from ..theme import (
 from .common import make_button, section_label
 from .toggle_switch import ToggleSwitch
 
-COLUMNS = ("Time", "Mesh", "Channel", "From", "Message", "Signal", "RSSI · SNR", "Hops")
-(COL_TIME, COL_MESH, COL_CHANNEL, COL_FROM, COL_MESSAGE, COL_SIGNAL, COL_RSSI, COL_HOPS) = range(len(COLUMNS))
+# Radio/Profile are appended (so the other indices stay put) but shown
+# after Time / Mesh, and only with several sniffer radios (redesign 1d).
+COLUMNS = ("Time", "Mesh", "Channel", "From", "Message", "Signal", "RSSI · SNR", "Hops", "Radio", "Profile")
+(COL_TIME, COL_MESH, COL_CHANNEL, COL_FROM, COL_MESSAGE, COL_SIGNAL, COL_RSSI, COL_HOPS, COL_RADIO,
+ COL_PROFILE) = range(len(COLUMNS))
 MESH_COLORS = {"meshcore": QColor(MESH_MESHCORE), "meshtastic": QColor(MESH_MESHTASTIC)}
 MESH_SHORT = {"meshcore": "MC", "meshtastic": "MT"}
 ROW_PAD = 12  # row padding left/right
@@ -89,6 +94,9 @@ class MessageModel(QAbstractTableModel):
         self._bold.setBold(True)
         self._italic = QFont(self._font)
         self._italic.setItalic(True)
+        self._small_font = QFont(self._font)
+        self._small_font.setPixelSize(11)
+        self.radio_numbers = {}  # radio label -> 1-based number (multi-radio)
 
     def rowCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(self.log.rows)
@@ -127,6 +135,11 @@ class MessageModel(QAbstractTableModel):
                 return "" if m.get("rssi") is None else f"{m['rssi']:.0f}"
             if col == COL_HOPS:
                 return "" if m.get("hops") is None else str(m["hops"])
+            if col == COL_RADIO:
+                n = self.radio_numbers.get(m.get("radio") or "")
+                return str(n) if n else ""
+            if col == COL_PROFILE:
+                return profile_text(m)
         elif role == Qt.ForegroundRole:
             if col == COL_MESH:
                 return MESH_COLORS.get(m["mesh"], QColor(TXT))
@@ -134,8 +147,10 @@ class MessageModel(QAbstractTableModel):
                 return QColor(TXT if is_text else DIM)
             if col == COL_FROM and is_text:
                 return QColor(ACCENT)
-            return QColor(DIM if col in (COL_TIME, COL_SIGNAL, COL_RSSI, COL_HOPS) else TXT)
+            return QColor(DIM if col in (COL_TIME, COL_SIGNAL, COL_RSSI, COL_HOPS, COL_PROFILE) else TXT)
         elif role == Qt.FontRole:
+            if col == COL_PROFILE:
+                return self._small_font
             if col == COL_MESH:
                 return self._bold
             if col == COL_MESSAGE and m["kind"] == "encrypted":
@@ -200,6 +215,16 @@ class MessageFilter(QSortFilterProxyModel):
                        self.text.strip())
 
 
+def profile_text(m):
+    """"MeshCore US · 910.525" from the profile name + label."""
+    name = (m.get("profile") or "").replace("Meshtastic ", "MT ", 1)
+    label = m.get("profile_label") or ""
+    if " — " in label:
+        freq = label.split(" — ", 1)[1].split(" MHz", 1)[0]
+        return f"{name} · {freq}" if name else freq
+    return name
+
+
 def row_message(index):
     """The message dict behind a (proxy) index -- the live object, not a
     copy (returning a dict through data() would make PySide copy it)."""
@@ -240,6 +265,8 @@ class MessageRowDelegate(QStyledItemDelegate):
 
         if col == COL_MESH:
             self._paint_badge(p, inner, m)
+        elif col == COL_RADIO:
+            self._paint_radio(p, inner, model.data(index, Qt.DisplayRole))
         elif col == COL_RSSI and not self.small:
             self._paint_signal(p, inner, m)
         else:
@@ -287,6 +314,21 @@ class MessageRowDelegate(QStyledItemDelegate):
         p.setPen(QPen(color, 1))
         p.setBrush(Qt.NoBrush)
         p.drawRoundedRect(box.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3)
+        p.drawText(box, Qt.AlignCenter, text)
+
+    def _paint_radio(self, p, inner, text):
+        if not text:
+            return
+        box = QRectF(inner.left(), inner.center().y() - 9, 18, 18)
+        p.setRenderHint(p.RenderHint.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(SWITCH_TRACK_ON))
+        p.drawRoundedRect(box, 4, 4)
+        font = QFont(pick_mono_font())
+        font.setPixelSize(10)
+        font.setBold(True)
+        p.setFont(font)
+        p.setPen(QColor(ACCENT_LIGHT))
         p.drawText(box, Qt.AlignCenter, text)
 
     def _paint_signal(self, p, inner, m):
@@ -429,6 +471,21 @@ class MessagePanel(QWidget):
         self._header = header
         return header
 
+    def set_radio_numbers(self, numbers):
+        """{radio label: number}; two or more radios show the Radio and
+        Profile columns (desktop layout only)."""
+        self.model.radio_numbers = dict(numbers)
+        self._multi_radio = len(numbers) > 1 and not self._compact
+        self._update_radio_columns()
+        if self.model.rows:
+            self.model.dataChanged.emit(self.model.index(0, COL_RADIO),
+                                        self.model.index(len(self.model.rows) - 1, COL_PROFILE))
+
+    def _update_radio_columns(self):
+        small = getattr(self.view.row_delegate, "small", False) if hasattr(self.view, "row_delegate") else False
+        self.view.setColumnHidden(COL_RADIO, not self._multi_radio)
+        self.view.setColumnHidden(COL_PROFILE, not self._multi_radio or small)
+
     def set_small(self, small):
         """Small window (redesign 1c), desktop layout only: 36 px header
         with a "⋯" menu, and Time · Channel · From · Message · RSSI."""
@@ -451,6 +508,7 @@ class MessagePanel(QWidget):
         for col, w in widths.items():
             view.setColumnWidth(col, w)
         self.model.small = small
+        self._update_radio_columns()
         self.model.headerDataChanged.emit(Qt.Horizontal, COL_RSSI, COL_RSSI)
         view.viewport().update()
 
@@ -566,8 +624,16 @@ class MessagePanel(QWidget):
             hdr.setSectionResizeMode(col, QHeaderView.Interactive)
             view.setColumnWidth(col, w)
         hdr.setSectionResizeMode(COL_MESSAGE, QHeaderView.Stretch)
+        hidden = tuple(hidden) + (COL_RADIO, COL_PROFILE)
         for col in hidden:
             view.setColumnHidden(col, True)
+        if not compact:
+            for col, w in ((COL_RADIO, 44 + CELL_GAP), (COL_PROFILE, 180 + CELL_GAP)):
+                hdr.setSectionResizeMode(col, QHeaderView.Interactive)
+                view.setColumnWidth(col, w)
+            hdr.moveSection(hdr.visualIndex(COL_RADIO), hdr.visualIndex(COL_TIME) + 1)
+            hdr.moveSection(hdr.visualIndex(COL_PROFILE), hdr.visualIndex(COL_MESH) + 1)
+        self._multi_radio = False
         view.selectionModel().currentRowChanged.connect(self._on_current_changed)
         self.view = view
         self._row_height = 22 if compact else ROW_HEIGHT
