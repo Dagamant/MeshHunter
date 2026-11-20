@@ -30,6 +30,11 @@ CHAT_NODES_CSV_PATH = DATA_DIR / "chat_nodes.csv"
 ROOM_NODES_CSV_PATH = DATA_DIR / "room_nodes.csv"
 SENSOR_NODES_CSV_PATH = DATA_DIR / "sensor_nodes.csv"
 ALL_CONTACTS_CSV_PATH = DATA_DIR / "all_contacts.csv"
+# Sniffer-only outputs: Meshtastic nodes heard off the air, and every raw
+# packet the sniffer captured (JSON lines, kept so they can be re-decoded
+# later with new keys/decoders).
+MESHTASTIC_NODES_CSV_PATH = DATA_DIR / "meshtastic_nodes.csv"
+SNIFFER_PACKETS_PATH = DATA_DIR / "sniffer_packets.jsonl"
 SESSION_LOG_DIR = DATA_DIR / "logs"
 
 # Node types (beyond repeaters, handled separately) that only get

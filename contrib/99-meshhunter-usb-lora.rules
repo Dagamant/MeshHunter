@@ -1,0 +1,6 @@
+# Lets members of the plugdev group use CH341-based USB LoRa sticks
+# (Nullhop MeshToad, MeshStick, ...) from MeshHunter without root.
+#   sudo cp contrib/99-meshhunter-usb-lora.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+# then replug the stick. (Make sure your user is in plugdev: `groups`.)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="5512", MODE="0660", GROUP="plugdev", TAG+="uaccess"

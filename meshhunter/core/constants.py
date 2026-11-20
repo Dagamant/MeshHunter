@@ -42,6 +42,20 @@ ALL_CONTACTS_CSV_FIELDS = [
     "first_seen", "last_heard",
 ]
 
+# meshtastic_nodes.csv: Meshtastic nodes heard by the sniffer. Not uploaded
+# anywhere (WDGWars' mesh slot is MeshCore-only) -- local record only.
+MESHTASTIC_CSV_FIELDS = [
+    "node_id", "long_name", "short_name", "hw_model", "role", "public_key",
+    "lat", "lon", "alt", "rssi", "snr", "hops_away", "profile", "packets",
+    "first_seen", "last_heard", "logger_lat", "logger_lon",
+]
+MESHTASTIC_COUNT_KEY = "meshtastic"
+
+# USB product string the sniffer firmware enumerates with (see
+# firmware/sniffer/boards/xiao_nrf52840_raw.json); how a serial port is
+# recognised as a sniffer rather than a MeshCore companion.
+SNIFFER_USB_PRODUCT = "MeshHunter Sniffer"
+
 WDGWARS_NODE_TYPE = "REPEATER"
 MESHCORE_ENVELOPE_TYPE = "MESHCORE"
 MESHCORE_NETWORK = "meshcore"
@@ -51,6 +65,12 @@ MESHCORE_NETWORK = "meshcore"
 # parse_device_selection() tells a saved/selected value apart from a plain
 # serial port path.
 BLE_PREFIX = "BLE: "
+# Device-list entry for a USB LoRa stick on a CH341 bridge (MeshToad etc.),
+# driven by core/usb_sniffer.py: "USB LoRa: <usb serial>".
+USB_RADIO_PREFIX = "USB LoRa: "
+# Device-list entry that runs every connected sniffer radio together as one
+# device (profiles shared out between them; see SnifferWorker).
+SNIFFER_GROUP_ENTRY = "All LoRa sniffers"
 BLE_SCAN_TIMEOUT = 4.0
 
 DEFAULT_INGEST_URL = "http://localhost:8765/api/mesh_nodes/ingest"

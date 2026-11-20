@@ -30,6 +30,18 @@ class Bridge(QObject):
     nodes = Signal(object)
     ble_devices = Signal(object)
     log = Signal(str)
+    # LoRa sniffer waterfall feed (see core/sniffer_worker.py):
+    # sniffer_profiles: [{"name", "freq", "bw", "sf"}] whenever (re)configured
+    # sniffer_rssi: {"cur": idx, "v": [[idx, dBm], ...]} ~5x per second
+    # sniffer_event: {"p": idx, "kind": "ok"|"crc"|"partial"} per packet
+    sniffer_profiles = Signal(object)
+    sniffer_rssi = Signal(object)
+    sniffer_event = Signal(object)
+    # sniffer_stat: radio telemetry ~every 5s -- noise floor, RX counters,
+    # hop count -- for the live stats strip and the noise-floor graph.
+    sniffer_stat = Signal(object)
+    message = Signal(object)
+    sniffer_radios = Signal(object)
     wdgwars_sent = Signal(int)
     ingest_sent = Signal(int)
 

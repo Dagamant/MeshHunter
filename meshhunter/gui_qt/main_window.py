@@ -19,7 +19,6 @@ dialog is closed.
 """
 
 import threading
-from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
@@ -32,19 +31,27 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QScrollArea,
+    QSizePolicy,
+    QSplitter,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from ..core.config import load_config, load_raw_config, save_config
 from ..core.constants import SERIAL_BAUD
-from ..core.devices import format_ble_entry, list_serial_ports, parse_device_selection, scan_ble_devices_sync
+from ..core.devices import (
+    format_ble_entry,
+    list_devices,
+    list_serial_ports,
+    parse_device_selection,
+    scan_ble_devices_sync,
+)
 from ..core.gps import GPSState, GPSWorker
 from ..core.json_import import import_contacts_json
 from ..core.logging_bridge import attach_library_logging
-from ..core.paths import SESSION_LOG_DIR
+from ..core.session import SessionLog, device_label, make_worker, session_log_name
 from ..core.uploads import flush_pending_ingest, flush_pending_wdgwars
-from ..core.worker import MeshCoreWorker
 from . import dialogs
 from .bridge import Bridge
 from .settings_dialog import SettingsDialog
@@ -55,7 +62,10 @@ from .widgets.connection_panel import ConnectionPanel
 from .widgets.live_pill import LivePill
 from .widgets.node_panel import NodePanel
 from .widgets.sync_panel import SyncPanel
+from .widgets.message_panel import MessagePanel
 from .widgets.terminal_log import TerminalLog
+from .widgets.sniffer_stats import SnifferStatsBar
+from .widgets.waterfall import WaterfallPanel
 
 # Optional/power-user config keys -- not part of example-config.json's
 # standard set, so their settings-dialog sections (and this main-window GPS
@@ -83,8 +93,7 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.wdgwars_sent_total = 0
         self.ingest_sent_total = 0
-        self.session_log_file = None
-        self.session_log_path = None
+        self.session_log = SessionLog()
         self._ble_entries = []
         self._settings_dialog = None
 
@@ -100,7 +109,7 @@ class MainWindow(QMainWindow):
         self._build_widgets()
         self._wire_signals()
 
-        self.connection_panel.set_devices(list_serial_ports() + self._ble_entries)
+        self.connection_panel.set_devices(list_devices() + self._ble_entries)
         self.connection_panel.set_device_selection(self.config_data.get("serial_device", ""))
         self._update_send_pending_visibility()
 
@@ -123,6 +132,11 @@ class MainWindow(QMainWindow):
         prefs_action.triggered.connect(self._open_settings_dialog)
         self.addAction(prefs_action)
 
+        sidebar_action = QAction("Toggle sidebar", self)
+        sidebar_action.setShortcut(QKeySequence("Ctrl+B"))
+        sidebar_action.triggered.connect(self._toggle_sidebar)
+        self.addAction(sidebar_action)
+
     def _build_widgets(self):
         central = QWidget()
         self.setCentralWidget(central)
@@ -130,20 +144,67 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        root.addWidget(self._build_rail())
+        self.rail = self._build_rail()
+        root.addWidget(self.rail)
+
+        # A thin strip that stays visible with the rail hidden, so there's
+        # always a way to bring it back (besides Ctrl+B).
+        self.rail_toggle = QToolButton()
+        self.rail_toggle.setObjectName("railToggle")
+        self.rail_toggle.setFixedWidth(14)
+        self.rail_toggle.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self.rail_toggle.setCursor(Qt.PointingHandCursor)
+        self.rail_toggle.clicked.connect(self._toggle_sidebar)
+        root.addWidget(self.rail_toggle)
 
         content = QWidget()
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
 
+        # Terminal above, decoded messages below; the user can drag the split.
+        # A thin live sniffer-stats strip sits between them (only while a LoRa
+        # sniffer is connected) -- the telemetry that used to scroll past as
+        # SNIFF_STAT lines in the terminal.
         self.terminal_log = TerminalLog()
-        content_layout.addWidget(self.terminal_log, stretch=1)
+        self.message_panel = MessagePanel()
+        self.sniffer_stats = SnifferStatsBar()
+        self.sniffer_stats.setMaximumHeight(104)
+        self.sniffer_stats.setVisible(False)
+        split = QSplitter(Qt.Vertical)
+        split.setChildrenCollapsible(False)
+        split.setHandleWidth(3)
+        split.addWidget(self.terminal_log)
+        split.addWidget(self.sniffer_stats)
+        split.addWidget(self.message_panel)
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 0)
+        split.setStretchFactor(2, 1)
+        split.setSizes([300, 96, 300])
+        content_layout.addWidget(split, stretch=1)
+
+        # Only shown while a LoRa sniffer is connected (see _set_waterfall_visible).
+        self.waterfall_panel = WaterfallPanel()
+        self.waterfall_panel.setFixedHeight(290)
+        self.waterfall_panel.setVisible(False)
+        content_layout.addWidget(self.waterfall_panel)
 
         self.node_panel = NodePanel()
         content_layout.addWidget(self.node_panel)
 
         root.addWidget(content, stretch=1)
+        self._set_sidebar_visible(not self.config_data.get("sidebar_hidden", False))
+
+    def _set_sidebar_visible(self, visible):
+        self.rail.setVisible(visible)
+        self.rail_toggle.setText("‹" if visible else "›")
+        self.rail_toggle.setToolTip(("Hide" if visible else "Show") + " the sidebar (Ctrl+B)")
+
+    def _toggle_sidebar(self):
+        visible = not self.rail.isVisible()
+        self._set_sidebar_visible(visible)
+        self.config_data["sidebar_hidden"] = not visible
+        save_config(self.config_data)
 
     def _build_rail(self):
         scroll = QScrollArea()
@@ -255,6 +316,15 @@ class MainWindow(QMainWindow):
         self.bridge.nodes.connect(self.node_panel.update_counts)
         self.bridge.ble_devices.connect(self._on_ble_devices)
         self.bridge.log.connect(self._log_line)
+        self.bridge.sniffer_profiles.connect(self._on_sniffer_profiles)
+        self.bridge.sniffer_rssi.connect(self.waterfall_panel.add_rssi)
+        self.bridge.sniffer_event.connect(self.waterfall_panel.add_event)
+        self.bridge.sniffer_stat.connect(self.waterfall_panel.add_stat)
+        self.bridge.sniffer_stat.connect(self._on_sniffer_stat)
+        self.bridge.message.connect(self.message_panel.add_message)
+        self.message_panel.channels_found.connect(self._add_found_channels)
+        self._update_channel_filter()
+        self.bridge.sniffer_radios.connect(self.waterfall_panel.set_radios)
         self.bridge.wdgwars_sent.connect(self._on_wdgwars_sent)
         self.bridge.ingest_sent.connect(self._on_ingest_sent)
 
@@ -285,6 +355,23 @@ class MainWindow(QMainWindow):
         finally:
             self._settings_dialog = None
 
+    def _update_channel_filter(self):
+        self.message_panel.set_subscribed(self.config_data.get("meshcore_channels") or [])
+
+    def _add_found_channels(self, names):
+        """Subscribe to channels recovered by "Find channels" (names derive
+        their own key), skipping any already listed, then save and apply."""
+        from ..core.channels import clean_entries
+
+        entries = list(self.config_data.get("meshcore_channels") or [])
+        have = {e["name"].lower() for e in entries}
+        added = [n for n in names if n.lower() not in have and n.lower() != "public"]
+        if not added:
+            return
+        entries += [{"name": n, "enabled": True} for n in added]
+        self._apply_settings({**self.config_data, "meshcore_channels": clean_entries(entries)})
+        self._log_line(f"Subscribed to {len(added)} recovered channel(s): {', '.join(added)}")
+
     def _apply_settings(self, new_config):
         gps_port_before = self.config_data.get("gps_port", "")
         gps_enabled_before = self.config_data.get("gps_enabled", True)
@@ -292,7 +379,8 @@ class MainWindow(QMainWindow):
         save_config(self.config_data)
         self._log_line("Config saved")
         if self.worker is not None:
-            self.worker.apply_config(self.config_data)
+            self.worker.apply_config(dict(self.config_data))
+        self._update_channel_filter()
         self._update_send_pending_visibility()
         if (
             self.config_data.get("gps_port", "") != gps_port_before
@@ -303,37 +391,16 @@ class MainWindow(QMainWindow):
     # ---- terminal logging ---------------------------------------------------
 
     def _open_session_log(self, port):
-        self._close_session_log()
-        try:
-            SESSION_LOG_DIR.mkdir(parents=True, exist_ok=True)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            safe_port = Path(port).name or "device"
-            path = SESSION_LOG_DIR / f"{ts}_{safe_port}.log"
-            self.session_log_file = path.open("w", encoding="utf-8")
-            self.session_log_path = path
-        except OSError as exc:
-            self.session_log_file = None
-            self.session_log_path = None
-            self._log_line(f"-- Could not open session log file: {exc} --")
+        error = self.session_log.open(port)
+        if error:
+            self._log_line(error)
 
     def _close_session_log(self):
-        if self.session_log_file is not None:
-            try:
-                self.session_log_file.close()
-            except OSError:
-                pass
-            self.session_log_file = None
-            self.session_log_path = None
+        self.session_log.close()
 
     def _log_line(self, line):
         self.terminal_log.append_line(line)
-        if self.session_log_file is not None:
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            try:
-                self.session_log_file.write(f"[{ts}] {line}\n")
-                self.session_log_file.flush()
-            except OSError:
-                self._close_session_log()
+        self.session_log.write(line)
 
     # ---- bridge slots -------------------------------------------------------
 
@@ -360,12 +427,28 @@ class MainWindow(QMainWindow):
 
     def _on_ble_devices(self, payload):
         self._ble_entries = [format_ble_entry(name, addr) for name, addr in payload]
-        self.connection_panel.set_devices(list_serial_ports() + self._ble_entries)
+        self.connection_panel.set_devices(list_devices() + self._ble_entries)
         # Always report completion, even at zero -- a scan that's actually
         # finished-but-empty (nothing in range, or a device that's already
         # connected elsewhere and so isn't advertising) is otherwise
         # silently indistinguishable from one that's still hung.
         self._log_line(f"-- Found {len(payload)} BLE device(s) --")
+
+    def _on_sniffer_profiles(self, payload):
+        self.waterfall_panel.set_profiles(payload)
+        self._set_waterfall_visible(True)
+
+    def _on_sniffer_stat(self, payload):
+        bar = getattr(self, "sniffer_stats", None)
+        if bar is not None:
+            bar.add_stat(payload)
+
+    def _set_waterfall_visible(self, visible):
+        """Overridden by PocketMainWindow, where the waterfall is a tab."""
+        self.waterfall_panel.setVisible(visible)
+        bar = getattr(self, "sniffer_stats", None)
+        if bar is not None:
+            bar.setVisible(visible)
 
     def _on_wdgwars_sent(self, payload):
         self.wdgwars_sent_total += payload
@@ -378,8 +461,11 @@ class MainWindow(QMainWindow):
     # ---- actions ------------------------------------------------------------
 
     def _set_connected_controls_state(self, connected):
-        self.sync_panel.set_clear_contacts_enabled(connected)
-        self.advertise_panel.set_enabled(connected)
+        # The sniffer is receive-only with no contact table, so advert and
+        # clear-contacts stay disabled while one is connected.
+        device_commands = connected and not getattr(self.worker, "is_sniffer", False)
+        self.sync_panel.set_clear_contacts_enabled(device_commands)
+        self.advertise_panel.set_enabled(device_commands)
 
     def _update_brand_status(self, connected, port=None):
         mono = pick_mono_font()
@@ -388,6 +474,10 @@ class MainWindow(QMainWindow):
             kind, target = parse_device_selection(port)
             if kind == "ble":
                 self.status_label.setText(f"BLE · {target}")
+            elif kind == "usb_radio":
+                self.status_label.setText(f"USB LoRa · {target or 'CH341'}")
+            elif kind == "sniffer_group":
+                self.status_label.setText("all LoRa sniffers")
             else:
                 self.status_label.setText(f"{target} · {SERIAL_BAUD}")
         else:
@@ -396,7 +486,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_ports(self):
         ports = list_serial_ports()
-        self.connection_panel.set_devices(ports + self._ble_entries)
+        self.connection_panel.set_devices(list_devices() + self._ble_entries)
         if self._settings_dialog is not None:
             self._settings_dialog.gps_panel.set_ports(ports)
         self._scan_for_ble()
@@ -446,28 +536,21 @@ class MainWindow(QMainWindow):
                 return
             self.config_data["serial_device"] = selection
             save_config(self.config_data)
-            kind, target = parse_device_selection(selection)
-            label = f"BLE {target}" if kind == "ble" else target
             self.connection_panel.set_connect_text("Disconnect")
             self.node_panel.reset()
             self.terminal_log.clear()
-            self._open_session_log(f"ble_{target.replace(':', '-')}" if kind == "ble" else target)
-            self._log_line(f"-- Connecting to {label}... --")
-            if self.session_log_path is not None:
-                self._log_line(f"-- Logging serial terminal session to {self.session_log_path} --")
-            self.worker = MeshCoreWorker(
-                target,
-                self.bridge,
-                connection_kind=kind,
-                api_key=self.config_data["api_key"],
-                auto_upload=self.config_data["auto_upload"],
-                ingest_url=self.config_data["ingest_url"],
-                ingest_api_key=self.config_data["ingest_api_key"],
-                ingest_auto_send=self.config_data["ingest_auto_send"],
-                auto_clear_contacts=self.config_data["auto_clear_contacts"],
-                batch_uploads=self.config_data["batch_uploads"],
-                gps_state=self.gps_state,
-            )
+            self.message_panel.clear()
+            self.waterfall_panel.clear()
+            if getattr(self, "sniffer_stats", None) is not None:
+                self.sniffer_stats.clear()
+            self._set_waterfall_visible(False)
+            self._open_session_log(session_log_name(selection))
+            self._log_line(f"-- Connecting to {device_label(selection)}... --")
+            if self.session_log.path is not None:
+                self._log_line(f"-- Logging serial terminal session to {self.session_log.path} --")
+            self.worker = make_worker(selection, self.config_data, self.bridge, self.gps_state)
+            if getattr(self.worker, "is_sniffer", False) and len(self.worker.ports) == 1:
+                self._log_line(f"-- {device_label(selection)} is a MeshHunter LoRa sniffer --")
             self.worker.start()
         else:
             self.worker.stop()

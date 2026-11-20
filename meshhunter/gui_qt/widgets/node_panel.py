@@ -7,7 +7,7 @@ original tkinter list-based attempt feel like a lockup.
 
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 
-from ...core.constants import NODE_DISPLAY_TYPES
+from ...core.constants import MESHTASTIC_COUNT_KEY, NODE_DISPLAY_TYPES
 from .common import section_label
 from .stat_tile import StatTile
 
@@ -29,6 +29,11 @@ class NodePanel(QWidget):
             tile = StatTile(label)
             self._tiles[node_type] = tile
             tiles_row.addWidget(tile)
+        # Only the LoRa sniffer reports Meshtastic nodes; hidden until it does.
+        self._meshtastic_tile = StatTile("Meshtastic")
+        self._meshtastic_tile.setVisible(False)
+        self._tiles[MESHTASTIC_COUNT_KEY] = self._meshtastic_tile
+        tiles_row.addWidget(self._meshtastic_tile)
         layout.addLayout(tiles_row)
 
     def update_counts(self, counts):
@@ -36,7 +41,10 @@ class NodePanel(QWidget):
             tile = self._tiles.get(node_type)
             if tile is not None:
                 tile.set_value(count)
+        if MESHTASTIC_COUNT_KEY in counts:
+            self._meshtastic_tile.setVisible(True)
 
     def reset(self):
         for tile in self._tiles.values():
             tile.set_value(0)
+        self._meshtastic_tile.setVisible(False)

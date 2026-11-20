@@ -12,25 +12,18 @@ enough, and stop() takes effect immediately.
 """
 
 import asyncio
-import threading
 import time
-from datetime import datetime
 
 from meshcore import EventType, MeshCore
 
-from .constants import (
-    ADV_TYPE_NAMES,
-    MESHCORE_ENVELOPE_TYPE,
-    MESHCORE_NETWORK,
-    NODE_DISPLAY_TYPES,
-    REPEATER_TYPE,
-    WDGWARS_NODE_TYPE,
-)
-from .node_utils import derive_node_id, has_coords, node_names
+from .constants import NODE_DISPLAY_TYPES, REPEATER_TYPE, WDGWARS_NODE_TYPE
+from .node_utils import has_coords, node_names
 from .paths import ALL_CONTACTS_CSV_PATH, EXTRA_NODE_TYPES, REPEATERS_CSV_PATH
-from .storage import load_all_contacts, load_known_nodes, save_all_contacts, save_known_nodes
+from .storage import load_all_contacts, load_known_nodes
 from .log_format import format_channel_msg, format_contact_msg, format_rx_log
-from .uploads import build_ingest_records, build_meshcore_records, send_to_ingest_api, upload_to_wdgwars
+from .channels import decrypt_group_text, subscribed_channels
+from .messages import companion_dm_message, meshcore_message
+from .recorder import persist_nodes, record_all_contacts, upload_new_nodes
 
 
 class MeshCoreWorker:
@@ -50,6 +43,7 @@ class MeshCoreWorker:
         auto_clear_contacts=False,
         batch_uploads=False,
         gps_state=None,
+        meshcore_channels=None,
     ):
         self.port = port
         self.connection_kind = connection_kind
@@ -62,6 +56,9 @@ class MeshCoreWorker:
         self.auto_clear_contacts = auto_clear_contacts
         self.batch_uploads = batch_uploads
         self.gps_state = gps_state
+        # Subscribed channels (core/channels.py), decrypted app-side from the
+        # RX log -- the device only decrypts the channels in its own slots.
+        self.channels = subscribed_channels({"meshcore_channels": meshcore_channels})
         self.loop = None
         self.meshcore = None
         self.known_repeaters = {}
@@ -115,6 +112,7 @@ class MeshCoreWorker:
         self.ingest_auto_send = config["ingest_auto_send"]
         self.auto_clear_contacts = config["auto_clear_contacts"]
         self.batch_uploads = config["batch_uploads"]
+        self.channels = subscribed_channels(config)
 
     def clear_all_contacts(self):
         """Remove every contact (all types) stored on the device."""
@@ -246,25 +244,7 @@ class MeshCoreWorker:
         reports, across Chat/Repeater/Room/Sensor alike. It does still skip
         contacts with no GPS fix, same as the per-type CSVs.
         """
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        for c in contacts:
-            pk = c.get("public_key")
-            if not pk or not has_coords(c):
-                continue
-            node_id = derive_node_id(pk)
-            row = self.known_all_contacts.setdefault(node_id, {"node_id": node_id, "first_seen": now})
-            row["name"] = c.get("adv_name") or node_id
-            row["adv_type"] = c.get("type", "")
-            row["type_label"] = ADV_TYPE_NAMES.get(c.get("type"), str(c.get("type", "")))
-            row["public_key"] = pk
-            row["adv_lat"] = c.get("adv_lat", "")
-            row["adv_lon"] = c.get("adv_lon", "")
-            row["has_gps"] = "yes" if has_coords(c) else "no"
-            row["out_path"] = c.get("out_path", "")
-            row["last_advert"] = c.get("last_advert", "")
-            row["lastmod"] = c.get("lastmod", "")
-            row["last_heard"] = now
-        save_all_contacts(self.known_all_contacts, ALL_CONTACTS_CSV_PATH)
+        record_all_contacts(self.known_all_contacts, contacts, ALL_CONTACTS_CSV_PATH)
 
     async def _on_contacts(self, event):
         contacts = event.payload or {}
@@ -313,35 +293,7 @@ class MeshCoreWorker:
             await self.meshcore.commands.get_contacts()
 
     async def _record_nodes(self, nodes, known_nodes, csv_path, node_type_label, log_label):
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        new_node_ids = []
-        for c in nodes:
-            pk = c["public_key"]
-            node_id = derive_node_id(pk)
-            if node_id not in known_nodes:
-                new_node_ids.append(node_id)
-            # logger_lat/lon (where *we* were) only get set here, inside
-            # setdefault's default -- so a node that's already known keeps
-            # whatever location it was first logged at, rather than getting
-            # overwritten with wherever we are on every later resync.
-            fix = self.gps_state.fix if self.gps_state else None
-            logger_lat, logger_lon = fix if fix else ("", "")
-            row = known_nodes.setdefault(node_id, {
-                "node_id": node_id,
-                "first_seen": now,
-                "logger_lat": logger_lat,
-                "logger_lon": logger_lon,
-            })
-            row["node_type"] = node_type_label
-            row["name"] = c.get("adv_name") or node_id
-            row["lat"] = c.get("adv_lat", "")
-            row["lon"] = c.get("adv_lon", "")
-            row["rssi"] = row.get("rssi", "")
-            row["type"] = MESHCORE_ENVELOPE_TYPE
-            row["network"] = MESHCORE_NETWORK
-            row["public_key"] = pk
-            row["last_heard"] = now
-        save_known_nodes(known_nodes, csv_path)
+        new_node_ids = persist_nodes(self, nodes, known_nodes, csv_path, node_type_label)
 
         if self.auto_clear_contacts and not self._bulk_clearing:
             # Once a node is safely persisted to our CSV, its device-side
@@ -362,32 +314,7 @@ class MeshCoreWorker:
                     name = c.get("adv_name") or c["public_key"][:8]
                     self.ui_queue.put(("log", f"-- Failed to auto-clear {name} from device: {detail} --"))
 
-        if not new_node_ids:
-            return
-        new_rows = {nid: known_nodes[nid] for nid in new_node_ids}
-
-        if self.batch_uploads:
-            # Deferred: leave these rows for "Send pending batch" to pick
-            # up later instead of uploading immediately, so a live internet
-            # connection isn't required right when a node is heard.
-            return
-
-        if self.auto_upload and self.api_key:
-            records = build_meshcore_records(new_rows)
-            self.ui_queue.put(("log", f"-- Auto-uploading {len(records)} new {log_label}(s) to WDGWars --"))
-            threading.Thread(
-                target=upload_to_wdgwars, args=(records, self.api_key, self.ui_queue), daemon=True
-            ).start()
-
-        if self.ingest_auto_send and self.ingest_api_key and self.ingest_url:
-            ingest_records = build_ingest_records(new_rows)
-            if ingest_records:
-                self.ui_queue.put(("log", f"-- Auto-sending {len(ingest_records)} new {log_label}(s) to Ingest API --"))
-                threading.Thread(
-                    target=send_to_ingest_api,
-                    args=(ingest_records, self.ingest_url, self.ingest_api_key, self.ui_queue),
-                    daemon=True,
-                ).start()
+        upload_new_nodes(self, {nid: known_nodes[nid] for nid in new_node_ids}, log_label)
 
     async def _on_any_event(self, event):
         if event.type == EventType.ERROR and (event.payload or {}).get("code_string") == "ERR_CODE_NOT_FOUND":
@@ -402,10 +329,17 @@ class MeshCoreWorker:
             return
         ts = time.strftime("%H:%M:%S")
         if event.type == EventType.RX_LOG_DATA:
-            payload_str = format_rx_log(event.payload or {})
+            payload = self._decrypt_subscribed(event.payload or {})
+            payload_str = format_rx_log(payload)
+            # Channel messages show up here (decrypted when the device knows
+            # the channel, or we're subscribed to it), so CHANNEL_MSG_RECV
+            # isn't sent to the panel too.
+            self.ui_queue.put(("message", meshcore_message(payload, "companion")))
         elif event.type == EventType.CONTACT_MSG_RECV:
             payload = event.payload or {}
-            payload_str = format_contact_msg(payload, await self._resolve_sender_name(payload))
+            sender = await self._resolve_sender_name(payload)
+            payload_str = format_contact_msg(payload, sender)
+            self.ui_queue.put(("message", companion_dm_message(payload, sender)))
         elif event.type == EventType.CHANNEL_MSG_RECV:
             payload = event.payload or {}
             payload_str = format_channel_msg(payload, await self._resolve_channel_name(payload.get("channel_idx")))
@@ -414,6 +348,20 @@ class MeshCoreWorker:
             if len(payload_str) > 200:
                 payload_str = payload_str[:200] + "…"
         self.ui_queue.put(("log", f"[{ts}] {event.type.value}: {payload_str}"))
+
+    def _decrypt_subscribed(self, payload):
+        """A GRP_TXT the device couldn't decrypt (channel not in its slots)
+        gets another try with our subscribed channels. Returns a copy with
+        chan_name/message filled in when one fits, else payload as-is."""
+        if payload.get("payload_typename") != "GRP_TXT" or payload.get("message") is not None:
+            return payload
+        raw = payload.get("pkt_payload")
+        if not isinstance(raw, (bytes, bytearray)):
+            return payload
+        found = decrypt_group_text(bytes(raw), self.channels)
+        if not found:
+            return payload
+        return {**payload, **found}
 
     async def _resolve_sender_name(self, payload):
         """Best-effort sender display name for a CONTACT_MSG_RECV payload --

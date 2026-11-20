@@ -1,4 +1,5 @@
-"""Modal Settings dialog: GPS, endpoint, and automation config.
+"""Modal Settings dialog: GPS, endpoint, automation, MeshCore channel
+subscriptions and LoRa sniffer config.
 
 These are configuration values (edited occasionally), not live status, so a
 modal dialog opened from the rail's settings button keeps the main window
@@ -11,11 +12,14 @@ already has the corresponding key(s) (see its gps_configured /
 ingest_configured).
 """
 
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QVBoxLayout
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QScrollArea, QVBoxLayout, QWidget
 
 from .widgets.automation_panel import AutomationPanel
+from .widgets.channels_panel import ChannelsPanel
 from .widgets.endpoints_panel import EndpointsPanel
 from .widgets.gps_panel import GPSPanel
+from .widgets.sniffer_panel import SnifferPanel
 
 
 class SettingsDialog(QDialog):
@@ -26,9 +30,22 @@ class SettingsDialog(QDialog):
         self._gps_configured = gps_configured
         self._ingest_configured = ingest_configured
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 12)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 12)
+        outer.setSpacing(0)
+
+        # Sections scroll as one column: with the sniffer section added the
+        # dialog no longer fits the pocket build's fixed 640x480 panel.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+        scroll.setWidget(content)
+        outer.addWidget(scroll, stretch=1)
 
         self.gps_panel = GPSPanel()
         self.gps_panel.setVisible(gps_configured)
@@ -42,10 +59,17 @@ class SettingsDialog(QDialog):
         self.automation_panel.set_ingest_visible(ingest_configured)
         layout.addWidget(self.automation_panel)
 
+        self.channels_panel = ChannelsPanel(config_data)
+        layout.addWidget(self.channels_panel)
+
+        self.sniffer_panel = SnifferPanel(config_data)
+        layout.addWidget(self.sniffer_panel)
+        layout.addStretch(1)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        outer.addWidget(buttons)
 
         self.gps_panel.set_ports(ports)
         self.gps_panel.set_enabled(config_data.get("gps_enabled", True))
@@ -67,6 +91,8 @@ class SettingsDialog(QDialog):
                 "auto_upload": automation["auto_upload"],
                 "auto_clear_contacts": automation["auto_clear_contacts"],
                 "batch_uploads": automation["batch_uploads"],
+                **self.channels_panel.values(),
+                **self.sniffer_panel.values(),
             }
         )
         if self._gps_configured:

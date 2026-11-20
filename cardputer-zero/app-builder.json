@@ -1,0 +1,30 @@
+{
+  "app_name": "MeshHunter",
+  "package_name": "meshhunter",
+  "version": "0.1.0",
+  "description": "MeshCore/Meshtastic node logger for the Cap LoRa-1262",
+
+  "store": {
+    "summary": "Log MeshCore and Meshtastic nodes heard over the air with the Cap LoRa-1262 radio and GPS.",
+    "description": "MeshHunter listens (receive only) on the MeshCore and Meshtastic presets with the Cap LoRa-1262 hat, verifies and logs MeshCore adverts (repeaters, companions, rooms, sensors) with the GPS position where they were heard, decodes default-channel traffic, and writes CSV files compatible with the MeshHunter desktop app for upload to WDGWars or a self-hosted ingest API.",
+    "categories": ["TODO: pick 1-2 real categories from docs/APP_BUILDER_JSON.md"],
+    "screenshots": [
+      "screenshot/meshhunter-nodes.png",
+      "screenshot/meshhunter-radio.png"
+    ],
+    "icon": "assets/images/meshhunter.png",
+    "license": "0BSD",
+    "source_repo": "https://github.com/Dagamant/MeshHunter",
+    "author": { "github": "Dagamant", "display_name": "The Bent" },
+    "share_code": "TODO",
+    "permissions": {
+      "camera": false,
+      "microphone": false,
+      "imu": false,
+      "network": false,
+      "additional_hardware": true,
+      "background_service": false,
+      "external_display": false
+    }
+  }
+}

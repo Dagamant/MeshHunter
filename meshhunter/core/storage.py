@@ -3,7 +3,7 @@ unfiltered-by-type all_contacts table."""
 
 import csv
 
-from .constants import ALL_CONTACTS_CSV_FIELDS, NODE_CSV_FIELDS
+from .constants import ALL_CONTACTS_CSV_FIELDS, MESHTASTIC_CSV_FIELDS, NODE_CSV_FIELDS
 
 
 def load_known_nodes(csv_path):
@@ -39,4 +39,16 @@ def save_all_contacts(rows, csv_path):
         writer = csv.DictWriter(f, fieldnames=ALL_CONTACTS_CSV_FIELDS)
         writer.writeheader()
         for row in sorted(rows.values(), key=lambda r: r.get("name", "")):
+            writer.writerow(row)
+
+
+def load_meshtastic_nodes(csv_path):
+    return load_all_contacts(csv_path)
+
+
+def save_meshtastic_nodes(rows, csv_path):
+    with csv_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=MESHTASTIC_CSV_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        for row in sorted(rows.values(), key=lambda r: r.get("node_id", "")):
             writer.writerow(row)

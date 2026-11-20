@@ -1,0 +1,28 @@
+# Example systemd unit for running MeshHunter headless at boot.
+#
+#   1. Edit User=, WorkingDirectory=/ExecStart= paths and --device below.
+#   2. sudo cp contrib/meshhunter.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload && sudo systemctl enable --now meshhunter
+#   4. journalctl -u meshhunter -f      # watch the log
+#
+# The user needs serial port access (Debian/Raspberry Pi OS: the "dialout"
+# group). Config and data live in that user's normal MeshHunter folders, so
+# configure it once with ./run-tui.sh as the same user (press s), or copy
+# config.json over. Prefer a stable /dev/serial/by-id/... path for --device.
+
+[Unit]
+Description=MeshHunter mesh node logger (headless)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/MeshHunter
+ExecStart=/home/pi/MeshHunter/run-tui.sh --headless --device /dev/ttyACM0
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

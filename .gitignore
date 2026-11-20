@@ -9,3 +9,5 @@ config.json
 *.csv
 logs/
 ref/
+# PlatformIO build output
+firmware/**/.pio/

@@ -44,6 +44,10 @@ SCROLLBAR_HOVER = "#2f6a3a"
 LIVE_PILL_BG = "#0e1f11"
 SWITCH_TRACK_ON = "#15341c"
 SWITCH_TRACK_OFF = "#141a14"
+# Messages panel: which mesh a packet came from. Kept clear of the app's
+# own green so a badge never reads as "status OK".
+MESH_MESHCORE = "#5ec8ff"
+MESH_MESHTASTIC = "#c79bff"
 SWITCH_KNOB_OFF = "#43554a"
 
 RAIL_WIDTH = 380
@@ -80,6 +84,20 @@ QMainWindow, #rail, #railContent, #terminalPanel, #nodePanel {{
 
 #rail {{
     border-right: 1px solid {LINE};
+}}
+
+#railToggle {{
+    background-color: {INK};
+    color: {DIM};
+    border: none;
+    border-right: 1px solid {LINE_SOFT};
+    padding: 0;
+    font-size: 13px;
+}}
+
+#railToggle:hover {{
+    background-color: {PANEL};
+    color: {ACCENT};
 }}
 
 #terminalPanel {{
@@ -211,6 +229,31 @@ QPlainTextEdit#terminal {{
     color: {TXT};
     border: none;
     padding: 14px 16px;
+}}
+
+QSplitter::handle {{
+    background-color: {LINE_SOFT};
+}}
+
+QSplitter::handle:hover {{
+    background-color: {SCROLLBAR_HOVER};
+}}
+
+QTableView#messages {{
+    background-color: {TERMINAL_BG};
+    color: {TXT};
+    border: none;
+    gridline-color: {LINE_SOFT};
+    selection-background-color: {LINE_SOFT};
+    selection-color: {TXT};
+}}
+
+QTableView#messages QHeaderView::section {{
+    background-color: {PANEL};
+    color: {DIM};
+    border: none;
+    border-bottom: 1px solid {LINE_SOFT};
+    padding: 4px 6px;
 }}
 
 /* Used by PocketMainWindow's tabbed layout (no QTabWidget in the desktop
