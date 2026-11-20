@@ -43,7 +43,11 @@ BANDS = [
 
 KIND_COLORS = {
     "ism": "#39ff14",
-    "lorawan": "#5ec8ff",
+    "lorawan": "#4fd1c5",
+    # Sniffer profiles (added by the waterfall, not listed in BANDS);
+    # the same colours as the MC / MT badges.
+    "meshcore": "#5ec8ff",
+    "meshtastic": "#c79bff",
     "iot": "#ff8fd0",
     "ham": "#ffe14d",
     "lmr": "#ffb347",

@@ -11,7 +11,7 @@ from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QToolTip, QVBoxLayout, QWidget
 
-from ...core.band_plan import KIND_COLORS, assign_lanes, bands_at, bands_in
+from ...core.band_plan import KIND_COLORS, Band, assign_lanes, bands_at, bands_in
 
 from ..theme import ACCENT, ACCENT_LIGHT, DIM, LINE, TERMINAL_BG, TERMINAL_DIVIDER, pick_mono_font
 from .common import section_label
@@ -62,6 +62,7 @@ class WaterfallCanvas(QWidget):
         # the frequency axis and the spectrum, plus a hover tooltip.
         self.show_bands = show_bands
         self._band_cache = (None, [])
+        self._mesh_bands = []  # Band per sniffer profile, same order as self.channels
         if show_bands:
             self.setMouseTracking(True)
         self.lut = _LUT if lut is None else lut
@@ -141,14 +142,31 @@ class WaterfallCanvas(QWidget):
     def _lane_height(self):
         return self.font_px + 5
 
+    def set_mesh_bands(self, bands):
+        """[(center_hz, bw_hz, label, family)]: the sniffer profiles, drawn
+        as bars in their own lane(s) under the band plan."""
+        self._mesh_bands = [Band((c - bw / 2) / 1e6, (c + bw / 2) / 1e6, label,
+                                 f"{label} sniffer profile, {c / 1e6:.3f} MHz / BW {bw / 1e3:g} kHz",
+                                 family if family in KIND_COLORS else "meshcore")
+                            for c, bw, label, family in bands]
+        self._band_cache = (None, [])
+        self.update()
+
     def _band_lanes(self):
-        """[(band, lane)] for the visible span (cached per tuning)."""
+        """[(band, lane)] for the visible span (cached per tuning): known
+        allocations on top (at most MAX_BAND_LANES), then the sniffer
+        profiles in lane(s) of their own just above the spectrum."""
         if not self.show_bands or self.span_hz <= 1:
             return []
         key = (self.center_hz, self.span_hz)
         if self._band_cache[0] != key:
             lo, hi = self.center_hz - self.span_hz / 2, self.center_hz + self.span_hz / 2
             lanes = [(b, lane) for b, lane in assign_lanes(bands_in(lo, hi)) if lane < MAX_BAND_LANES]
+            first = max((lane for _, lane in lanes), default=-1) + 1
+            mesh = sorted((b for b in self._mesh_bands if b.hi * 1e6 > lo and b.lo * 1e6 < hi), key=lambda b: b.lo)
+            # Leave room for labels beside narrow bars when stacking.
+            gap = self.span_hz / 1e6 * 0.12
+            lanes += [(b, first + lane) for b, lane in assign_lanes(mesh, min_gap=gap)]
             self._band_cache = (key, lanes)
         return self._band_cache[1]
 
@@ -171,7 +189,8 @@ class WaterfallCanvas(QWidget):
             r = QRectF(x0, top + lane * lane_h, x1 - x0, lane_h - 2)
             color = QColor(KIND_COLORS.get(band.kind, DIM))
             fill = QColor(color)
-            fill.setAlphaF(0.14)
+            live = band in self._mesh_bands and self._mesh_bands.index(band) in self.active
+            fill.setAlphaF(0.40 if live else 0.14)
             p.fillRect(r, fill)
             p.fillRect(QRectF(r.left(), r.top(), r.width(), 1), color)
             # Only the band's real edges get a tick (not where the view clips it).
@@ -186,15 +205,21 @@ class WaterfallCanvas(QWidget):
                 p.drawText(r.adjusted(4, 1, -3, 0), Qt.AlignLeft | Qt.AlignVCenter,
                            fm.elidedText(band.label, Qt.ElideRight, int(r.width() - 7)))
             else:
-                # Too narrow (e.g. a single Z-Wave channel): label it to the
-                # right of its marker if nothing else in this lane is there.
-                tx = r.right() + 3
+                # Too narrow (e.g. a single Z-Wave channel or a mesh
+                # profile): label it beside its marker -- right if there's
+                # room in this lane, else left.
                 tw = fm.horizontalAdvance(band.label)
-                if tx + tw < w and not any(
-                        l == lane and o is not band and self._freq_to_x(o.lo * 1e6, w) < tx + tw + 4
-                        and self._freq_to_x(o.hi * 1e6, w) > tx for o, l in self._band_lanes()):
-                    p.drawText(QRectF(tx, r.top() + 1, tw + 2, r.height()), Qt.AlignLeft | Qt.AlignVCenter,
-                               band.label)
+
+                def free(a, b):
+                    return 0 <= a and b <= w and not any(
+                        l == lane and o is not band and self._freq_to_x(o.lo * 1e6, w) < b + 4
+                        and self._freq_to_x(o.hi * 1e6, w) > a - 4 for o, l in self._band_lanes())
+
+                for tx in (r.right() + 3, r.left() - 3 - tw):
+                    if free(tx, tx + tw):
+                        p.drawText(QRectF(tx, r.top() + 1, tw + 2, r.height()),
+                                   Qt.AlignLeft | Qt.AlignVCenter, band.label)
+                        break
 
     def mouseMoveEvent(self, event):
         if self.show_bands and self.span_hz > 1:
@@ -310,6 +335,8 @@ class WaterfallCanvas(QWidget):
             p.setPen(QPen(edge, 1, Qt.DashLine))
             p.drawLine(int(x0), spec_top, int(x0), h)
             p.drawLine(int(x1), spec_top, int(x1), h)
+            if self.show_bands and self._mesh_bands:
+                continue  # named by its bar in the band lanes above
             tag = f"{label} {center / 1e6:.3f}"
             tw = p.fontMetrics().horizontalAdvance(tag) + 8
             th = self.font_px + 5

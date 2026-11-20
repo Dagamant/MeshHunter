@@ -300,15 +300,9 @@ class WaterfallPanel(QWidget):
         self._graph_width = graph_width or self.GRAPH_WIDTH
         self._graph_width_applied = False
         self.splitter.splitterMoved.connect(self._on_splitter_moved)
-        # Multi-radio: which radio covers which part of the band.
-        from .band_strip import BandStrip
-
-        self.band_strip = BandStrip()
-        self.band_strip.setVisible(False)
         self._radios = []
         # Set False by the desktop window, whose top bar has per-radio chips.
         self.radio_pills_when_multi = True
-        layout.addWidget(self.band_strip)
         layout.addWidget(self.splitter, stretch=1)
 
         # RTL-SDR state.
@@ -380,11 +374,11 @@ class WaterfallPanel(QWidget):
 
     def set_profiles(self, profiles):
         self._profiles = list(profiles)
-        self.band_strip.set_assignments(self._profiles, self._radios)
         self._live = bool(self._profiles)
         self.sdr_canvas.set_channels([
             (p["freq"] * 1e6, p["bw"] * 1e3, p["name"]) for p in self._profiles
         ])
+        self._update_mesh_bands()
         if self._sdr_worker is not None and self._sweep_range() != self._sdr_key:
             self._stop_sdr()  # restarted on the new range below
         self._poll_sdr()
@@ -398,11 +392,21 @@ class WaterfallPanel(QWidget):
             self.mode_label.setText(f"Hop · {len(profiles)} profiles · highlighted = listening now")
         self._show_source()
 
+    def _update_mesh_bands(self):
+        """Each sniffer profile as a bar in the RTL-SDR waterfall's band-plan
+        lanes, labelled with its radio number when several are connected."""
+        numbers = {r["label"]: n for n, r in enumerate(self._radios, start=1)} if len(self._radios) > 1 else {}
+        bands = []
+        for p in self._profiles:
+            name = p["name"].replace("Meshtastic ", "MT ", 1)
+            n = numbers.get(p.get("radio"))
+            bands.append((p["freq"] * 1e6, p["bw"] * 1e3, f"{n} · {name}" if n else name, p.get("family", "")))
+        self.sdr_canvas.set_mesh_bands(bands)
+
     def set_radios(self, radios):
         self._radios = list(radios)
-        self.band_strip.set_assignments(self._profiles, self._radios)
+        self._update_mesh_bands()
         multi = len(radios) > 1
-        self.band_strip.setVisible(multi)
         if multi and not self.radio_pills_when_multi:
             radios = []  # the main window's top bar shows a chip per radio instead
         while len(self._radio_chips) > len(radios):
