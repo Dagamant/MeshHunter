@@ -266,7 +266,7 @@ class WaterfallPanel(QWidget):
 
         self.view = WaterfallView()
         self.sdr_canvas = WaterfallCanvas(spectrum_height=40, font_px=9, axis_height=14, lut=GREEN_LUT,
-                                          trace_color=LOG_WARN, trace_fill=True)
+                                          trace_color=LOG_WARN, trace_fill=True, show_bands=True)
         self.sdr_canvas.setMinimumHeight(0)
         self.sdr_canvas.idle_text = "starting RTL-SDR…"
         self.wf_stack = QStackedWidget()

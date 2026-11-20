@@ -9,13 +9,16 @@ Bridge; this widget only colour-maps and paints them.
 import numpy as np
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QToolTip, QVBoxLayout, QWidget
+
+from ...core.band_plan import KIND_COLORS, assign_lanes, bands_at, bands_in
 
 from ..theme import ACCENT, ACCENT_LIGHT, DIM, LINE, TERMINAL_BG, TERMINAL_DIVIDER, pick_mono_font
 from .common import section_label
 
 HISTORY_ROWS = 400
 SPECTRUM_HEIGHT = 70
+MAX_BAND_LANES = 3
 
 # label -> sample rate (= displayed span)
 SPANS = {"2.4 MHz": 2_400_000, "1.0 MHz": 1_024_000}
@@ -53,8 +56,14 @@ GREEN_LUT = _build_green_lut()
 
 class WaterfallCanvas(QWidget):
     def __init__(self, parent=None, font_px=10, spectrum_height=SPECTRUM_HEIGHT, row_px=1, axis_height=None,
-                 lut=None, trace_color="#ffe14d", trace_fill=False):
+                 lut=None, trace_color="#ffe14d", trace_fill=False, show_bands=False):
         super().__init__(parent)
+        # Labelled strip of known allocations (core/band_plan.py) between
+        # the frequency axis and the spectrum, plus a hover tooltip.
+        self.show_bands = show_bands
+        self._band_cache = (None, [])
+        if show_bands:
+            self.setMouseTracking(True)
         self.lut = _LUT if lut is None else lut
         self.trace_color = trace_color
         self.trace_fill = trace_fill
@@ -124,12 +133,84 @@ class WaterfallCanvas(QWidget):
     def _freq_to_x(self, hz, width):
         return (hz - (self.center_hz - self.span_hz / 2)) / self.span_hz * width
 
+    def _x_to_freq(self, x, width):
+        return self.center_hz - self.span_hz / 2 + x / max(1, width) * self.span_hz
+
+    # ---- band plan --------------------------------------------------------------
+
+    def _lane_height(self):
+        return self.font_px + 5
+
+    def _band_lanes(self):
+        """[(band, lane)] for the visible span (cached per tuning)."""
+        if not self.show_bands or self.span_hz <= 1:
+            return []
+        key = (self.center_hz, self.span_hz)
+        if self._band_cache[0] != key:
+            lo, hi = self.center_hz - self.span_hz / 2, self.center_hz + self.span_hz / 2
+            lanes = [(b, lane) for b, lane in assign_lanes(bands_in(lo, hi)) if lane < MAX_BAND_LANES]
+            self._band_cache = (key, lanes)
+        return self._band_cache[1]
+
+    def _bands_height(self):
+        lanes = self._band_lanes()
+        return (max(lane for _, lane in lanes) + 1) * self._lane_height() + 3 if lanes else 0
+
+    def _paint_bands(self, p, w):
+        lane_h = self._lane_height()
+        font = p.font()
+        font.setFamily(self._mono)
+        font.setPixelSize(max(8, self.font_px - 1))
+        p.setFont(font)
+        fm = p.fontMetrics()
+        top = self.axis_height + 1
+        for band, lane in self._band_lanes():
+            x0 = max(0.0, self._freq_to_x(band.lo * 1e6, w))
+            x1 = min(float(w), self._freq_to_x(band.hi * 1e6, w))
+            x1 = max(x1, x0 + 2)
+            r = QRectF(x0, top + lane * lane_h, x1 - x0, lane_h - 2)
+            color = QColor(KIND_COLORS.get(band.kind, DIM))
+            fill = QColor(color)
+            fill.setAlphaF(0.14)
+            p.fillRect(r, fill)
+            p.fillRect(QRectF(r.left(), r.top(), r.width(), 1), color)
+            # Only the band's real edges get a tick (not where the view clips it).
+            edge = QColor(color)
+            edge.setAlphaF(0.8)
+            for f in (band.lo, band.hi):
+                x = self._freq_to_x(f * 1e6, w)
+                if 0 <= x <= w:
+                    p.fillRect(QRectF(x - 0.5, r.top(), 1, r.height()), edge)
+            p.setPen(color.lighter(130))
+            if r.width() > fm.horizontalAdvance(band.label[:4]) + 10:
+                p.drawText(r.adjusted(4, 1, -3, 0), Qt.AlignLeft | Qt.AlignVCenter,
+                           fm.elidedText(band.label, Qt.ElideRight, int(r.width() - 7)))
+            else:
+                # Too narrow (e.g. a single Z-Wave channel): label it to the
+                # right of its marker if nothing else in this lane is there.
+                tx = r.right() + 3
+                tw = fm.horizontalAdvance(band.label)
+                if tx + tw < w and not any(
+                        l == lane and o is not band and self._freq_to_x(o.lo * 1e6, w) < tx + tw + 4
+                        and self._freq_to_x(o.hi * 1e6, w) > tx for o, l in self._band_lanes()):
+                    p.drawText(QRectF(tx, r.top() + 1, tw + 2, r.height()), Qt.AlignLeft | Qt.AlignVCenter,
+                               band.label)
+
+    def mouseMoveEvent(self, event):
+        if self.show_bands and self.span_hz > 1:
+            hz = self._x_to_freq(event.position().x(), self.width())
+            lines = [f"{hz / 1e6:.3f} MHz"]
+            lines += [f"{b.label} ({b.lo:g}–{b.hi:g} MHz): {b.description}" for b in bands_at(hz)]
+            lines += [f"{label} profile" for c, bw, label in self.channels if abs(hz - c) <= bw / 2]
+            QToolTip.showText(event.globalPosition().toPoint(), "\n".join(lines), self)
+        super().mouseMoveEvent(event)
+
     def paintEvent(self, event):
         p = QPainter(self)
         w, h = self.width(), self.height()
         p.fillRect(self.rect(), QColor(TERMINAL_BG))
-        spec_top = self.axis_height
-        wf_top = self.axis_height + self.spectrum_height
+        spec_top = self.axis_height + self._bands_height()
+        wf_top = spec_top + self.spectrum_height
         wf_rect = QRectF(0, wf_top, w, h - wf_top)
 
         if self._rows is not None:
@@ -199,6 +280,10 @@ class WaterfallCanvas(QWidget):
             p.setPen(QColor(self.axis_text_color))
             p.drawText(QRectF(x - 50, 0, 100, self.axis_height - 4), Qt.AlignCenter, f"{f / 1e6:.3f}")
             f += step
+
+        if self.show_bands:
+            p.fillRect(QRectF(0, self.axis_height, w, spec_top - self.axis_height), QColor(TERMINAL_BG))
+            self._paint_bands(p, w)
 
         if self._rows is None:
             p.setPen(QColor("#ffffff"))
