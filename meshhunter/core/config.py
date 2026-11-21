@@ -25,6 +25,18 @@ SNIFFER_DEFAULTS = {
     "sniffer_custom_profiles": [],
     "sniffer_meshcore_channels": [],
     "sniffer_meshtastic_channels": [],
+    # {radio label (e.g. "ttyACM1"): profile key}: with several radios,
+    # pins that radio to one profile (set from its chip in the top bar);
+    # the others share the rest. See sniffer_profiles.assign_profiles.
+    "sniffer_radio_overrides": {},
+    # RF band: "waterfall" (spectrum) or "sensors" (the RTL-SDR runs
+    # rtl_433 instead, see core/rf_sensors.py); extra bands to hop in
+    # sensors mode ("315", "345", "433"), seconds per hop, and an
+    # rtl_433 executable path when it isn't on PATH.
+    "rf_mode": "waterfall",
+    "rf_sensor_extras": [],
+    "rf_sensor_dwell_s": 20,
+    "rtl_433_path": "",
 }
 
 
@@ -41,9 +53,15 @@ def _sniffer_config(data):
             value = list(default)
         elif isinstance(default, str) and not isinstance(value, str):
             value = default
+        elif isinstance(default, dict):
+            value = {str(k): str(v) for k, v in value.items()} if isinstance(value, dict) else {}
         out[key] = value
     if out["sniffer_mode"] not in ("fixed", "hop"):
         out["sniffer_mode"] = "hop"
+    if out["rf_mode"] not in ("waterfall", "sensors"):
+        out["rf_mode"] = "waterfall"
+    out["rf_sensor_extras"] = [str(x) for x in out["rf_sensor_extras"] if str(x) in ("315", "345", "433")]
+    out["rf_sensor_dwell_s"] = max(5, out["rf_sensor_dwell_s"])
     return out
 
 # LoRa HAT (SX1262 + RTL-SDR) settings. Kept separate from the companion
@@ -86,6 +104,30 @@ def _with_hat_defaults(config, data):
     return config
 
 
+# Desktop window layout the user dragged/toggled (see gui_qt/main_window.py).
+UI_DEFAULTS = {
+    "ui_rf_height": 230,
+    "ui_serial_height": 240,
+    "ui_rf_graph_width": 380,
+    "ui_serial_open": False,
+}
+
+
+def _ui_config(data):
+    out = {}
+    for key, default in UI_DEFAULTS.items():
+        value = data.get(key, default)
+        if isinstance(default, bool):
+            value = bool(value)
+        else:
+            try:
+                value = max(0, int(value))
+            except (TypeError, ValueError):
+                value = default
+        out[key] = value
+    return out
+
+
 def load_config():
     if CONFIG_PATH.exists():
         try:
@@ -101,7 +143,7 @@ def load_config():
                 "gps_port": data.get("gps_port", ""),
                 "gps_enabled": bool(data.get("gps_enabled", True)),
                 "batch_uploads": bool(data.get("batch_uploads", False)),
-                "sidebar_hidden": bool(data.get("sidebar_hidden", False)),
+                **_ui_config(data),
                 "meshcore_channels": config_channels(data),
                 **_sniffer_config(data),
             }, data)
@@ -118,7 +160,7 @@ def load_config():
         "gps_port": "",
         "gps_enabled": True,
         "batch_uploads": False,
-        "sidebar_hidden": False,
+        **_ui_config({}),
         "meshcore_channels": config_channels({}),
         **_sniffer_config({}),
     }, {})

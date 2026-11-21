@@ -39,6 +39,10 @@ SESSION_LOG_DIR = DATA_DIR / "logs"
 # Every packet the LoRa HAT hears (MeshCore or Meshtastic), with where we
 # were when we heard it.
 LORA_PACKETS_CSV_PATH = DATA_DIR / "lora_packets.csv"
+# RTL-SDR "Sensors" mode (rtl_433): one row per device heard, and every
+# raw decode as JSON lines. See core/rf_sensors.py.
+RF_SENSORS_CSV_PATH = DATA_DIR / "rf_sensors.csv"
+RF_SENSORS_RAW_PATH = DATA_DIR / "rf_sensors.jsonl"
 
 # Node types (beyond repeaters, handled separately) that only get
 # logged/uploaded when they've advertised real coordinates (contacts with

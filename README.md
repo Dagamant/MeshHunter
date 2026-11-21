@@ -96,6 +96,9 @@ into it, and launches the app. On later runs it just launches — re-run `pip
 install -r requirements.txt` yourself after pulling changes that touch
 dependencies.
 
+On macOS you can double-click `MeshHunter.command` in Finder instead. On
+Linux, a desktop launcher just needs `Exec=/path/to/MeshHunter/run.sh --desktop`.
+
 ## Configuration
 
 `example-config.json` shows the available fields — edit them from the
@@ -328,6 +331,56 @@ completeness for coverage. To capture everything on several networks, add
 radios until each has one profile, and connect to All LoRa sniffers. Extra radio profiles and channel keys can be added
 in `config.json` (`sniffer_custom_profiles`, `sniffer_meshtastic_channels`;
 MeshCore channels are in Settings, see above); see `firmware/sniffer/README.md`.
+
+To choose what one radio listens to, click its chip in the top bar and pick
+a profile; the other radios share the rest (pick "Automatic" to undo).
+
+## RF sensors (RTL-SDR + rtl_433, optional)
+
+With an RTL-SDR plugged in, the RF band appears even without a LoRa device.
+Its **Waterfall | Sensors** switch turns the dongle from a spectrum
+waterfall into a decoder for the other devices transmitting around you,
+using [rtl_433](https://github.com/merbanan/rtl_433), which must be
+installed separately:
+
+- Debian/Ubuntu/Raspberry Pi OS: `sudo apt install rtl-433`
+- macOS: `brew install rtl_433`
+- Windows: the release zip from GitHub. Set `rtl_433_path` in `config.json`
+  if it isn't on your PATH.
+
+MeshHunter detects the dongle through librtlsdr, so that also has to be
+findable. On Linux, install `rtl-sdr` (`librtlsdr0`). On macOS, Homebrew's
+`rtl_433` pulls in `librtlsdr`, and both `/opt/homebrew` and `/usr/local` are
+searched. On Windows, put the folder that contains `rtlsdr.dll` (from an
+rtl-sdr release) on your PATH. Otherwise the RF band acts as if no dongle is
+plugged in.
+
+Sensors mode hops between the frequencies where 902–928 MHz devices
+actually transmit, `rf_sensor_dwell_s` (default 20) seconds each:
+
+| Centre | What's decoded there |
+|---|---|
+| 912.6 MHz | Itron ERT electric/gas/water meters (SCM, SCM+, IDM), Neptune R900 water meters |
+| 915.0 MHz | US 915 MHz weather and home sensors: Ecowitt / Fine Offset / Ambient Weather, LaCrosse, F007TH, and others |
+| 916.6 MHz | Badger ORION water meters, Honeywell ActivLink doorbells |
+
+**Bands ▾** adds bands outside 33 cm to the cycle. A 915 MHz antenna hears
+these less well.
+
+- 315 MHz: US tire-pressure sensors, keyfobs.
+- 345 MHz: Honeywell 5800 / 2Gig security sensors.
+- 433.92 MHz: AcuRite, Oregon Scientific, Bresser, LaCrosse 433, ThermoPro, and others.
+
+Each device gets one row in the table: type, model, ID, latest readings,
+signal, how often it was heard and when. Hover a row for the raw decode.
+Two files keep the history, both in the data directory:
+
+- `rf_sensors.csv`: one row per device, with first/last seen, best signal
+  and the GPS position where it was heard best. It persists across sessions.
+- `rf_sensors.jsonl`: every raw decode.
+
+Nothing is uploaded. Some devices can't be decoded this way: Davis
+weather stations, Z-Wave, LoRaWAN, and Sensus / Landis+Gyr smart meters.
 
 ## Data sent over each API
 

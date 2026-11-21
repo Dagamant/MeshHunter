@@ -214,6 +214,22 @@ def _node_csv_paths():
     return [REPEATERS_CSV_PATH] + [spec[0] for spec in EXTRA_NODE_TYPES.values()]
 
 
+def pending_counts():
+    """{"wdgwars": n, "ingest": n}: logged nodes not yet sent to each
+    endpoint, counted the same way the flush_pending_* functions pick them
+    (shown in the Sync menu)."""
+    counts = {"wdgwars": 0, "ingest": 0}
+    for csv_path in _node_csv_paths():
+        rows = load_known_nodes(csv_path)
+        if not rows:
+            continue
+        wdg = {nid: r for nid, r in rows.items() if not r.get("uploaded_wdgwars")}
+        ing = {nid: r for nid, r in rows.items() if not r.get("uploaded_ingest")}
+        counts["wdgwars"] += len(build_meshcore_records(wdg)) if wdg else 0
+        counts["ingest"] += len(build_ingest_records(ing)) if ing else 0
+    return counts
+
+
 def flush_pending_wdgwars(config, ui_queue):
     """Load every known node from all four CSVs and send whatever's still
     pending (per the uploaded_wdgwars column) to WDGWars, marking rows done
@@ -274,3 +290,30 @@ def flush_pending_ingest(config, ui_queue):
 
     if not sent_anything:
         ui_queue.put(("log", "-- No pending nodes to send to Ingest API --"))
+
+
+def test_ingest_endpoint(url, api_key, timeout=10):
+    """Settings' "Test" link: POST an empty record list (nothing gets
+    ingested) and report whether the endpoint accepted it.
+    Returns (ok, short text for the UI)."""
+    if not url:
+        return False, "no URL"
+    req = urllib.request.Request(
+        url,
+        data=b"[]",
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-API-Key": api_key or "",
+            "Accept": "application/json",
+            "User-Agent": "meshcore-cli/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as resp:
+            return True, f"HTTP {resp.status}"
+    except urllib.error.HTTPError as e:
+        return False, f"HTTP {e.code}" + (" · check the API key" if e.code in (401, 403) else "")
+    except Exception as exc:  # DNS, refused, timeout, bad URL, TLS...
+        reason = getattr(exc, "reason", None) or exc
+        return False, str(reason)[:60]

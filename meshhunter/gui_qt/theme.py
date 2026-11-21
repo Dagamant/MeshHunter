@@ -35,8 +35,8 @@ LINE_SOFT = "#12261a"
 LOG_PATH = "#5a7a5e"
 LOG_OK = "#9be89a"
 LOG_WARN = "#c9b06a"
-DANGER_TEXT = "#a97b7b"
-DANGER_BORDER = "#3d2626"
+DANGER_TEXT = "#d99a9a"
+DANGER_BORDER = "#6b2f2f"
 DANGER_HOVER_BORDER = "#ff7878"
 DANGER_HOVER_TEXT = "#e59595"
 TERMINAL_DIVIDER = "#1c3a22"
@@ -49,12 +49,19 @@ SWITCH_TRACK_OFF = "#141a14"
 MESH_MESHCORE = "#5ec8ff"
 MESH_MESHTASTIC = "#c79bff"
 SWITCH_KNOB_OFF = "#43554a"
-
-RAIL_WIDTH = 380
+# Added with the 2026 desktop redesign (top bar + inspector layout).
+ROW_SELECTED = "#0f2414"
+ROW_HOVER = "#0b170e"
+ROW_SEPARATOR = "#0a120c"
+TEXT_SECONDARY = "#8fa592"  # descriptions in Settings
+CHECK_OFF_BORDER = "#2a3a2e"
+PROFILE_ROW_ON = "#0b130d"
+SIGNAL_TRACK = "#0d1a10"
 
 MONO_FONT_CANDIDATES = (
     "JetBrains Mono", "Ubuntu Mono", "DejaVu Sans Mono", "Liberation Mono", "Consolas", "Courier New",
 )
+SANS_FONT_CANDIDATES = ("IBM Plex Sans", "Inter", "Noto Sans", "Segoe UI", "Cantarell", "DejaVu Sans")
 
 
 def pick_mono_font():
@@ -65,6 +72,16 @@ def pick_mono_font():
     # Qt's own fixed-font fallback -- always resolves to something
     # monospace, unlike leaving the family unset.
     return QFontDatabase.systemFont(QFontDatabase.FixedFont).family()
+
+
+def pick_sans_font():
+    """Buttons, Settings titles and nav: IBM Plex Sans if installed, else
+    the system UI font."""
+    families = set(QFontDatabase.families())
+    for name in SANS_FONT_CANDIDATES:
+        if name in families:
+            return name
+    return QFontDatabase.systemFont(QFontDatabase.GeneralFont).family()
 
 
 # QPushButton variants are selected via a "variant" dynamic property
@@ -78,26 +95,160 @@ QWidget {{
     color: {TXT};
 }}
 
-QMainWindow, #rail, #railContent, #terminalPanel, #nodePanel {{
+QMainWindow, #terminalPanel, #nodePanel {{
     background-color: {INK};
 }}
 
-#rail {{
-    border-right: 1px solid {LINE};
+/* ---- desktop top bar ---------------------------------------------- */
+#topBar {{
+    background-color: {RAIL_TOP};
+    border-bottom: 1px solid {LINE};
 }}
-
-#railToggle {{
-    background-color: {INK};
-    color: {DIM};
+#topBar QWidget {{
+    background: transparent;
+}}
+QFrame[class="VDivider"] {{
+    background-color: {LINE};
     border: none;
-    border-right: 1px solid {LINE_SOFT};
-    padding: 0;
-    font-size: 13px;
+}}
+QToolButton#deviceChip, QToolButton#radioChip {{
+    background-color: {PANEL_2};
+    border: 1px solid {LINE};
+    border-radius: 8px;
+    padding: 0 10px;
+}}
+QToolButton#deviceChip:hover, QToolButton#sentButton:hover, QToolButton#radioChip:hover {{
+    border: 1px solid {ACCENT};
+}}
+QToolButton#deviceChip::menu-indicator, QToolButton#sentButton::menu-indicator,
+QToolButton#radioChip::menu-indicator {{
+    image: none;
+    width: 0;
+}}
+QToolButton#sentButton {{
+    background-color: transparent;
+    border: 1px solid {LINE};
+    border-radius: 8px;
+    padding: 0 10px;
+}}
+QWidget#segmented {{
+    background: transparent;
+    border: 1px solid {LINE};
+    border-radius: 8px;
+}}
+QWidget#segmented QPushButton {{
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    color: {TXT};
+    padding: 0 12px;
+}}
+QWidget#segmented QPushButton:hover {{
+    color: {ACCENT};
+}}
+QWidget#segmented QPushButton:disabled {{
+    color: {DIM};
+}}
+QWidget#segmented QPushButton:checked {{
+    background-color: {SWITCH_TRACK_ON};
+    color: {ACCENT_LIGHT};
+}}
+QWidget#segmented QFrame {{
+    background-color: {LINE};
+    border: none;
+}}
+QMenu {{
+    background-color: {PANEL_2};
+    border: 1px solid {LINE};
+    border-radius: 8px;
+    padding: 4px;
+    color: {TXT};
+}}
+QMenu::item {{
+    padding: 6px 18px 6px 12px;
+    border-radius: 6px;
+}}
+QMenu::item:selected {{
+    background-color: {SWITCH_TRACK_ON};
+    color: {ACCENT_LIGHT};
+}}
+QMenu::item:disabled {{
+    color: {DIM};
+}}
+QMenu::separator {{
+    height: 1px;
+    background: {LINE_SOFT};
+    margin: 4px 6px;
+}}
+QMenu::section {{
+    color: {DIM};
+    padding: 4px 12px 2px 12px;
 }}
 
-#railToggle:hover {{
+/* ---- stats strip / drawers / inspector ---------------------------- */
+#statsStrip {{
+    background-color: {TERMINAL_BG};
+    border-bottom: 1px solid {LINE_SOFT};
+}}
+#statsStrip QWidget {{
+    background: transparent;
+}}
+#serialBar {{
+    background-color: {RAIL_TOP};
+    border-top: 1px solid {LINE};
+}}
+#serialBar QWidget {{
+    background: transparent;
+}}
+#packetInspector {{
     background-color: {PANEL};
+    border-left: 1px solid {LINE};
+}}
+#packetInspector QWidget#inspectorBody, #packetInspector QScrollArea,
+#packetInspector QScrollArea > QWidget > QWidget {{
+    background-color: {PANEL};
+}}
+#inspectorHeader {{
+    background-color: {RAIL_TOP};
+    border-bottom: 1px solid {LINE_SOFT};
+}}
+QLabel[class="Box"] {{
+    background-color: {TERMINAL_BG};
+    border: 1px solid {LINE_SOFT};
+    border-radius: 8px;
+}}
+QLabel[class="PathChip"] {{
+    background-color: {PANEL_2};
+    border: 1px solid {LINE};
+    border-radius: 4px;
+    padding: 2px 5px;
+}}
+QLabel[class="PathChip"][last="true"] {{
+    border: 1px solid {ACCENT_DIM};
+    color: {ACCENT_LIGHT};
+}}
+QToolButton[class="Link"] {{
+    background: transparent;
+    border: none;
+    color: {ACCENT_LIGHT};
+    padding: 0;
+}}
+QToolButton[class="Link"]:hover {{
     color: {ACCENT};
+}}
+QToolButton[class="Close"] {{
+    background: transparent;
+    border: none;
+    color: {DIM};
+    font-size: 15px;
+    padding: 0 4px;
+}}
+QToolButton[class="Close"]:hover {{
+    color: {ACCENT};
+}}
+#rfBand {{
+    background-color: {TERMINAL_BG};
+    border-top: 1px solid {LINE};
 }}
 
 #terminalPanel {{
@@ -133,8 +284,16 @@ QLineEdit, QComboBox {{
     color: {TXT};
 }}
 
-QLineEdit:focus, QComboBox:focus {{
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{
     border: 1px solid {ACCENT};
+}}
+
+QSpinBox {{
+    background-color: {PANEL_2};
+    border: 1px solid {LINE_SOFT};
+    border-radius: 8px;
+    padding: 4px 8px;
+    color: {TXT};
 }}
 
 QComboBox::drop-down {{
@@ -254,6 +413,37 @@ QTableView#messages QHeaderView::section {{
     border: none;
     border-bottom: 1px solid {LINE_SOFT};
     padding: 4px 6px;
+}}
+
+/* Desktop message list: painted rows (MessageRowDelegate draws the
+   separator, hover and selection), so the view itself stays flat. */
+QTableView#messageList, QTableView#sensorList {{
+    background-color: {TERMINAL_BG};
+    color: {TXT};
+    border: none;
+    outline: 0;
+    selection-background-color: {ROW_SELECTED};
+    selection-color: {TXT};
+}}
+QTableView#messageList QHeaderView::section, QTableView#sensorList QHeaderView::section {{
+    background-color: {PANEL};
+    color: {DIM};
+    border: none;
+    border-bottom: 1px solid {LINE_SOFT};
+    padding: 0 4px;
+    height: 24px;
+}}
+#messageHeader {{
+    background-color: {RAIL_TOP};
+    border-bottom: 1px solid {LINE_SOFT};
+}}
+#messageHeader QLineEdit, #messageHeader QComboBox {{
+    border-radius: 7px;
+    padding: 2px 8px;
+}}
+#messageHeader QPushButton {{
+    border-radius: 7px;
+    padding: 0 10px;
 }}
 
 /* Used by PocketMainWindow's tabbed layout (no QTabWidget in the desktop

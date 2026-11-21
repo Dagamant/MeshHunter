@@ -1,5 +1,12 @@
 """The main application window: owns the MeshCoreWorker/GPSWorker lifecycle,
-the rail+content layout, and all the signal wiring between them.
+the layout, and all the signal wiring between them.
+
+Layout (desktop redesign 1a): top bar (device, LIVE, GPS, advertise, sync,
+Settings) / stats strip / messages + packet inspector / RF band / serial
+drawer. PocketMainWindow (pocket_window.py) builds its own compact layout
+from the older panel widgets; both expose the same attribute names
+(connection_panel, sync_panel, node_panel, terminal_log, ...) so the logic
+here drives either.
 
 MeshCoreWorker (core/worker.py) runs the MeshCore connection as a task on
 the same qasync-merged event loop this window's own Qt event loop runs on
@@ -12,10 +19,7 @@ asyncio-native equivalent) -- its Bridge signals still cross a real thread
 boundary, which Qt's signal/slot connections handle safely regardless.
 
 Configuration lives in a modal Settings dialog (see settings_dialog.py),
-opened via the gear button in the rail's brand header -- the rail itself
-only keeps operational controls (device selection, connect, advertise,
-sync) and status/indicators that need to update continuously while the
-dialog is closed.
+opened from the top bar's Settings button (or Ctrl+,).
 """
 
 import asyncio
@@ -23,21 +27,16 @@ import sys
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QIcon, QKeySequence, QPixmap
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
+from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
-    QLabel,
     QMainWindow,
-    QComboBox,
-    QScrollArea,
-    QSizePolicy,
     QSplitter,
     QStackedWidget,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -55,28 +54,24 @@ from ..core.gps import GPSState, GPSWorker
 from ..core.json_import import import_contacts_json
 from ..core.logging_bridge import attach_library_logging
 from ..core.lora_worker import LoRaWorker, radio_settings_from_config
-from ..core.paths import LORA_PACKETS_CSV_PATH, SESSION_LOG_DIR
+from ..core.paths import LORA_PACKETS_CSV_PATH
 from ..core.rtlsdr import WaterfallWorker
 from ..core.session import SessionLog, device_label, make_worker, session_log_name
-from ..core.uploads import flush_pending_ingest, flush_pending_wdgwars
+from ..core.sniffer_profiles import all_profiles
+from ..core.uploads import flush_pending_ingest, flush_pending_wdgwars, pending_counts
 from ..core.worker import MeshCoreWorker
 from . import dialogs
 from .bridge import Bridge
 from .settings_dialog import SettingsDialog
-from .theme import ACCENT, DIM, LOGO_PATH, RAIL_WIDTH, pick_mono_font
-from .widgets.advertise_panel import AdvertisePanel
-from .widgets.common import make_button
-from .widgets.common import section_label
-from .widgets.connection_panel import ConnectionPanel
+from .theme import LINE, LOGO_PATH, PANEL_2
 from .widgets.hat_panel import HatPanel
-from .widgets.live_pill import LivePill
-from .widgets.node_panel import NodePanel
-from .widgets.packet_table import PacketTable
-from .widgets.sync_panel import SyncPanel
 from .widgets.message_panel import MessagePanel
-from .widgets.terminal_log import TerminalLog
+from .widgets.packet_inspector import OverlayShadow, PacketInspector
+from .widgets.packet_table import PacketTable
 from .widgets.sdr_waterfall import WaterfallView
-from .widgets.sniffer_stats import SnifferStatsBar
+from .widgets.serial_drawer import SerialDrawer
+from .widgets.stats_strip import StatsStrip
+from .widgets.top_bar import TopBar
 from .widgets.waterfall import WaterfallPanel
 
 # Optional/power-user config keys -- not part of example-config.json's
@@ -97,13 +92,17 @@ class MainWindow(QMainWindow):
     # PocketMainWindow turns it off -- on a HAT device the fullscreen HAT
     # touch UI (hat_pocket_window.py) covers that instead.
     HAS_HAT_UI = True
+    # Redesign 1c: at or below this width the window switches to its
+    # small layout (see _set_small). PocketMainWindow turns it off.
+    SMALL_BREAKPOINT = 1280
+    SMALL_RF_HEIGHT = 140
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MeshHunter")
         self.setWindowIcon(QIcon(str(LOGO_PATH)))
-        self.resize(1280, 860)
-        self.setMinimumSize(760, 560)
+        self.resize(1440, 900)
+        self.setMinimumSize(1024, 680)
 
         self.config_data = load_config()
         if self.config_data["lora_network"] not in ("MeshCore", "Meshtastic"):
@@ -159,214 +158,226 @@ class MainWindow(QMainWindow):
     # ---- layout ---------------------------------------------------------
 
     def _build_shortcuts(self):
-        # No menu bar -- Settings is reached via the rail's gear button
-        # (see _build_brand_header) -- but the keyboard shortcut is still
-        # worth keeping, so the QAction is attached directly to the window.
+        # No menu bar; Settings is the top bar's button, but the keyboard
+        # shortcut is still worth keeping.
         prefs_action = QAction("Preferences", self)
         prefs_action.setShortcut(QKeySequence("Ctrl+,"))
         prefs_action.triggered.connect(self._open_settings_dialog)
         self.addAction(prefs_action)
 
-        sidebar_action = QAction("Toggle sidebar", self)
-        sidebar_action.setShortcut(QKeySequence("Ctrl+B"))
-        sidebar_action.triggered.connect(self._toggle_sidebar)
-        self.addAction(sidebar_action)
+        serial_action = QAction("Toggle serial drawer", self)
+        serial_action.setShortcut(QKeySequence("Ctrl+`"))
+        serial_action.triggered.connect(self._toggle_serial_drawer)
+        self.addAction(serial_action)
+
+        close_inspector = QAction("Close packet inspector", self)
+        close_inspector.setShortcut(QKeySequence(Qt.Key_Escape))
+        close_inspector.triggered.connect(self._close_inspector)
+        self.addAction(close_inspector)
 
     def _build_widgets(self):
         central = QWidget()
         self.setCentralWidget(central)
-        root = QHBoxLayout(central)
+        root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self.rail = self._build_rail()
-        root.addWidget(self.rail)
+        self.top_bar = TopBar()
+        root.addWidget(self.top_bar)
+        # Same names the rest of this class (and the pocket layout) use.
+        self.connection_panel = self.top_bar.device_chip
+        self.advertise_panel = self.top_bar.advertise
+        self.sync_panel = self.top_bar.sent
+        self.live_pill = self.top_bar.live
+        self.sync_panel.set_ingest_shown(self.ingest_configured)
+        self.sync_panel.pending_counts = pending_counts
+        self.connection_panel.set_modes(_MODES if HAT_SUPPORTED else _MODES[:1])
 
-        # A thin strip that stays visible with the rail hidden, so there's
-        # always a way to bring it back (besides Ctrl+B).
-        self.rail_toggle = QToolButton()
-        self.rail_toggle.setObjectName("railToggle")
-        self.rail_toggle.setFixedWidth(14)
-        self.rail_toggle.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        self.rail_toggle.setCursor(Qt.PointingHandCursor)
-        self.rail_toggle.clicked.connect(self._toggle_sidebar)
-        root.addWidget(self.rail_toggle)
+        self.stats_strip = StatsStrip()
+        root.addWidget(self.stats_strip)
+        self.node_panel = self.stats_strip
+        self.sniffer_stats = self.stats_strip
 
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(0)
-
-        # Companion mode: terminal above, decoded messages below; the user can
-        # drag the split. A thin live sniffer-stats strip sits between them
-        # (only while a LoRa sniffer is connected) -- the telemetry that used
-        # to scroll past as SNIFF_STAT lines in the terminal.
-        # LoRa HAT mode swaps that page for decoded packets + the RTL-SDR
-        # waterfall.
-        self.content_stack = QStackedWidget()
-        self.terminal_log = TerminalLog()
+        # Body: messages | inspector (companion/sniffer) or the HAT's
+        # packet table, above the RF band and the serial drawer.
         self.message_panel = MessagePanel()
-        self.sniffer_stats = SnifferStatsBar()
-        self.sniffer_stats.setMaximumHeight(104)
-        self.sniffer_stats.setVisible(False)
-        split = QSplitter(Qt.Vertical)
-        split.setChildrenCollapsible(False)
-        split.setHandleWidth(3)
-        split.addWidget(self.terminal_log)
-        split.addWidget(self.sniffer_stats)
-        split.addWidget(self.message_panel)
-        split.setStretchFactor(0, 1)
-        split.setStretchFactor(1, 0)
-        split.setStretchFactor(2, 1)
-        split.setSizes([300, 96, 300])
-        self.content_stack.addWidget(split)
-
-        self.hat_splitter = QSplitter(Qt.Vertical)
-        self.hat_splitter.setChildrenCollapsible(False)
+        self.inspector = PacketInspector()
+        self.inspector.setVisible(False)
+        messages_page = QWidget()
+        self.messages_page = messages_page
+        self.inspector_shadow = OverlayShadow(messages_page)
+        self.inspector_shadow.setVisible(False)
+        self._small = False
+        mrow = QHBoxLayout(messages_page)
+        self._messages_row = mrow
+        mrow.setContentsMargins(0, 0, 0, 0)
+        mrow.setSpacing(0)
+        mrow.addWidget(self.message_panel, stretch=1)
+        mrow.addWidget(self.inspector)
         self.packet_table = PacketTable()
-        self.waterfall_view = WaterfallView()
-        self.hat_splitter.addWidget(self.packet_table)
-        self.hat_splitter.addWidget(self.waterfall_view)
-        self.hat_splitter.setSizes([1, 1])
-        self.content_stack.addWidget(self.hat_splitter)
-        content_layout.addWidget(self.content_stack, stretch=1)
+        self.body_stack = QStackedWidget()
+        self.body_stack.addWidget(messages_page)
+        self.body_stack.addWidget(self.packet_table)
 
-        # Only shown while a LoRa sniffer is connected (see _set_waterfall_visible).
-        self.waterfall_panel = WaterfallPanel()
-        self.waterfall_panel.setFixedHeight(290)
-        self.waterfall_panel.setVisible(False)
-        content_layout.addWidget(self.waterfall_panel)
+        ui = self.config_data
+        self.waterfall_panel = WaterfallPanel(
+            graph_width=ui.get("ui_rf_graph_width"), gain_db=ui.get("sdr_gain"),
+            sensors=True, rf_mode=ui.get("rf_mode", "waterfall"), rf_extras=ui.get("rf_sensor_extras", []),
+            rf_dwell_s=ui.get("rf_sensor_dwell_s", 20), rtl_433_exe=ui.get("rtl_433_path", ""),
+        )
+        self.waterfall_panel.radio_pills_when_multi = False
+        self.waterfall_panel.gps_state = self.gps_state
+        self._rf_device = False  # an RTL-SDR is plugged in: the RF band shows for it alone
+        self.waterfall_view = WaterfallView()  # LoRa HAT's own RTL-SDR view
+        self.rf_stack = QStackedWidget()
+        self.rf_stack.addWidget(self.waterfall_panel)
+        self.rf_stack.addWidget(self.waterfall_view)
+        self.rf_stack.setMinimumHeight(140)
+        self.rf_stack.setVisible(False)  # until a sniffer (or the HAT) is live
 
-        self.node_panel = NodePanel()
-        content_layout.addWidget(self.node_panel)
+        self.serial_drawer = SerialDrawer()
+        self.terminal_log = self.serial_drawer
 
-        root.addWidget(content, stretch=1)
-        self._set_sidebar_visible(not self.config_data.get("sidebar_hidden", False))
+        self.splitter = QSplitter(Qt.Vertical)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(1)
+        self.splitter.addWidget(self.body_stack)
+        self.splitter.addWidget(self.rf_stack)
+        self.splitter.addWidget(self.serial_drawer)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
+        self.splitter.setStretchFactor(2, 0)
+        self.body_stack.setMinimumHeight(160)
+        root.addWidget(self.splitter, stretch=1)
 
-    def _set_sidebar_visible(self, visible):
-        self.rail.setVisible(visible)
-        self.rail_toggle.setText("‹" if visible else "›")
-        self.rail_toggle.setToolTip(("Hide" if visible else "Show") + " the sidebar (Ctrl+B)")
-
-    def _toggle_sidebar(self):
-        visible = not self.rail.isVisible()
-        self._set_sidebar_visible(visible)
-        self.config_data["sidebar_hidden"] = not visible
-        save_config(self.config_data)
-
-    def _build_rail(self):
-        scroll = QScrollArea()
-        scroll.setObjectName("rail")
-        scroll.setFixedWidth(RAIL_WIDTH)
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-        rail = QWidget()
-        rail.setObjectName("railContent")
-        layout = QVBoxLayout(rail)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        layout.addWidget(self._build_brand_header())
-
-        self.mode_block = QWidget()
-        mode_layout = QVBoxLayout(self.mode_block)
-        mode_layout.setContentsMargins(16, 14, 16, 0)
-        mode_layout.setSpacing(11)
-        mode_layout.addWidget(section_label("MODE"))
-        self.mode_combo = QComboBox()
-        self.mode_combo.setMinimumHeight(34)
-        for key, label in _MODES:
-            self.mode_combo.addItem(label, key)
-        mode_layout.addWidget(self.mode_combo)
-        self.mode_block.setVisible(HAT_SUPPORTED)
-        layout.addWidget(self.mode_block)
-
+        # HAT controls open as a popover anchored to the device chip.
+        self.hat_popover = QFrame(self, Qt.Popup)
+        self.hat_popover.setObjectName("hatPopover")
+        self.hat_popover.setStyleSheet(f"#hatPopover {{ background: {PANEL_2}; border: 1px solid {LINE};"
+                                       f" border-radius: 10px; }}")
+        pop = QVBoxLayout(self.hat_popover)
+        pop.setContentsMargins(4, 4, 4, 4)
         self.hat_panel = HatPanel()
-        layout.addWidget(self.hat_panel)
+        pop.addWidget(self.hat_panel)
 
-        self.connection_panel = ConnectionPanel()
-        layout.addWidget(self.connection_panel)
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(600)
+        self._save_timer.timeout.connect(lambda: save_config(self.config_data))
+        self.splitter.splitterMoved.connect(self._on_splitter_moved)
+        if ui.get("ui_serial_open"):
+            self.serial_drawer.set_open(True)
+        self._apply_splitter_sizes()
 
-        self.advertise_panel = AdvertisePanel()
-        layout.addWidget(self.advertise_panel)
+    # ---- layout state -------------------------------------------------------
 
-        self.sync_panel = SyncPanel()
-        layout.addWidget(self.sync_panel)
+    def _apply_splitter_sizes(self):
+        ui = self.config_data
+        total = max(self.splitter.height(), 600)
+        rf_height = self.SMALL_RF_HEIGHT if self._small else ui.get("ui_rf_height", 230)
+        rf = rf_height if self.rf_stack.isVisible() else 0
+        serial = ui.get("ui_serial_height", 240) if self.serial_drawer.is_open() else 30
+        self.splitter.setSizes([max(160, total - rf - serial), rf, serial])
 
-        layout.addStretch(1)
-        scroll.setWidget(rail)
-        return scroll
+    def _on_splitter_moved(self, *_):
+        sizes = self.splitter.sizes()
+        if self.rf_stack.isVisible() and sizes[1] > 0 and not self._small:
+            self.config_data["ui_rf_height"] = sizes[1]
+        if self.serial_drawer.is_open():
+            self.config_data["ui_serial_height"] = sizes[2]
+        self._save_timer.start()
 
-    def _build_brand_header(self):
-        mono = pick_mono_font()
-        block = QWidget()
-        layout = QVBoxLayout(block)
-        layout.setContentsMargins(16, 16, 16, 14)
-        layout.setSpacing(9)
+    # ---- small window (redesign 1c) ------------------------------------------
 
-        logo_pixmap = QPixmap(str(LOGO_PATH))
-        if not logo_pixmap.isNull():
-            logo_label = QLabel()
-            # The full-width badge (RAIL_WIDTH-32, square) ran ~320px tall --
-            # a third of the window's minimum height before any operational
-            # control was visible. Capped well below rail width so the
-            # wordmark/tagline stay legible while the rest of the rail wins
-            # the space.
-            logo_label.setPixmap(logo_pixmap.scaledToWidth(200, Qt.SmoothTransformation))
-            logo_label.setAlignment(Qt.AlignCenter)
-            layout.addWidget(logo_label)
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.SMALL_BREAKPOINT:
+            small = self.width() <= self.SMALL_BREAKPOINT
+            if small != self._small:
+                self._set_small(small)
 
-        brand_row = QHBoxLayout()
-        brand_row.setSpacing(0)
-        tagline = QLabel("MeshCore node logger")
-        tagline.setStyleSheet(f"font-family: '{mono}'; font-size: 12px; color: {DIM};")
-        brand_row.addWidget(tagline)
-        brand_row.addStretch(1)
-        settings_btn = make_button("Settings", variant="secondary", height=26)
-        settings_btn.setToolTip("Settings (Ctrl+,)")
-        settings_btn.clicked.connect(self._open_settings_dialog)
-        brand_row.addWidget(settings_btn)
-        layout.addLayout(brand_row)
+    def _set_small(self, small):
+        self._small = small
+        self.top_bar.set_compact(small)
+        self.stats_strip.set_compact(small)
+        self.message_panel.set_small(small)
+        self.waterfall_panel.set_small(small)
+        # The inspector floats over the table instead of taking a column.
+        visible = self.inspector.isVisible()
+        if small:
+            self._messages_row.removeWidget(self.inspector)
+            self.messages_page.installEventFilter(self)
+        else:
+            self.messages_page.removeEventFilter(self)
+            self._messages_row.addWidget(self.inspector)
+        self.inspector.set_overlay(small)
+        self.inspector.setVisible(visible)
+        self._place_inspector()
+        self._apply_splitter_sizes()
 
-        status_row = QHBoxLayout()
-        status_row.setSpacing(8)
-        self.device_arrow_label = QLabel("▸")
-        self.device_arrow_label.setStyleSheet(f"font-family: '{mono}'; font-size: 12px; color: {DIM};")
-        status_row.addWidget(self.device_arrow_label)
-        self.status_label = QLabel("not connected")
-        self.status_label.setStyleSheet(f"font-family: '{mono}'; font-size: 10px;")
-        status_row.addWidget(self.status_label)
-        status_row.addStretch(1)
-        layout.addLayout(status_row)
+    def _place_inspector(self):
+        if self._small:
+            page = self.messages_page
+            inset = 8
+            top = self.message_panel._header.height() + inset  # keep the filter / ⋯ menu usable
+            self.inspector.setGeometry(page.width() - self.inspector.width() - inset, top,
+                                       self.inspector.width(), max(120, page.height() - top - inset))
+            self.inspector_shadow.follow(self.inspector.geometry())
+            self.inspector_shadow.setVisible(self.inspector.isVisible())
+            self.inspector_shadow.raise_()
+            self.inspector.raise_()
+        else:
+            self.inspector_shadow.setVisible(False)
 
-        self.live_pill = LivePill()
-        pill_row = QHBoxLayout()
-        pill_row.addWidget(self.live_pill)
-        pill_row.addStretch(1)
-        layout.addLayout(pill_row)
+    def eventFilter(self, obj, event):
+        if obj is self.messages_page and event.type() == QEvent.Resize:
+            self._place_inspector()
+        return super().eventFilter(obj, event)
 
-        # GPS fix is live status, not configuration -- shown here (rather
-        # than only inside the settings dialog) so it stays visible/updating
-        # while the dialog is closed. Only exists at all when GPS is
-        # actually configured (see gps_configured in __init__).
-        self.gps_fix_label = None
-        if self.gps_configured:
-            gps_block = QVBoxLayout()
-            gps_block.setSpacing(2)
-            gps_label = QLabel("GPS")
-            gps_label.setStyleSheet(f"font-family: '{mono}'; font-size: 10px; color: {DIM};")
-            gps_block.addWidget(gps_label)
-            self.gps_fix_label = QLabel("not configured")
-            self.gps_fix_label.setStyleSheet(f"font-family: '{mono}'; font-size: 15px; font-weight: 600; color: {DIM};")
-            gps_block.addWidget(self.gps_fix_label)
-            layout.addLayout(gps_block)
+    def _remember(self, key, value):
+        self.config_data[key] = value
+        self._save_timer.start()
 
-        divider_line = QFrame()
-        divider_line.setFrameShape(QFrame.HLine)
-        layout.addWidget(divider_line)
+    def _toggle_serial_drawer(self):
+        self.serial_drawer.toggle()
 
-        return block
+    def _on_serial_toggled(self, open_):
+        self._remember("ui_serial_open", open_)
+        self._apply_splitter_sizes()
+
+    # ---- packet inspector -------------------------------------------------
+
+    def _noise_floor(self):
+        strip = getattr(self, "stats_strip", None)  # none in the pocket layout
+        if strip is None:
+            return None
+        noises = [p["noise"] for p in strip._latest.values() if p.get("noise") is not None]
+        return min(noises) if noises else None
+
+    def _on_message_selected(self, m):
+        if m is None:
+            self.inspector.setVisible(False)
+            self.inspector_shadow.setVisible(False)
+            return
+        self.inspector.show_message(m, self._noise_floor())
+        self.inspector.setVisible(True)
+        self._place_inspector()
+
+    def _on_message_updated(self, m):
+        if self.inspector.isVisible() and self.inspector.current() is m:
+            self.inspector.refresh(m)
+
+    def _close_inspector(self):
+        if self.inspector.isVisible():
+            self.inspector.setVisible(False)
+            self.inspector_shadow.setVisible(False)
+            self.message_panel.clear_selection()
+
+    def _show_hat_popover(self):
+        chip = self.top_bar.device_chip
+        self.hat_popover.adjustSize()
+        self.hat_popover.move(chip.mapToGlobal(QPoint(0, chip.height() + 6)))
+        self.hat_popover.show()
 
     # ---- wiring -----------------------------------------------------------
 
@@ -379,8 +390,8 @@ class MainWindow(QMainWindow):
         self.sync_panel.send_ingest_clicked.connect(self._send_pending_ingest)
         self.sync_panel.clear_contacts_clicked.connect(self._clear_device_contacts)
         self.sync_panel.import_json_clicked.connect(self._import_contacts_json)
+        self._wire_layout_signals()
         if self.HAS_HAT_UI:
-            self.mode_combo.currentIndexChanged.connect(lambda _: self._set_mode(self.mode_combo.currentData()))
             self.hat_panel.start_clicked.connect(self._toggle_hat)
             self.hat_panel.settings_changed.connect(self._on_hat_settings_changed)
             self.waterfall_view.sdr_settings_changed.connect(self._on_sdr_settings_changed)
@@ -409,6 +420,25 @@ class MainWindow(QMainWindow):
             self.bridge.waterfall_row.connect(self.waterfall_view.canvas.add_row)
             self.bridge.waterfall_error.connect(self._on_waterfall_error)
 
+    def _wire_layout_signals(self):
+        """Signals of the desktop layout's own widgets (overridden to a
+        no-op by PocketMainWindow)."""
+        self.top_bar.settings_clicked.connect(self._open_settings_dialog)
+        self.connection_panel.mode_selected.connect(self._set_mode)
+        self.connection_panel.hat_settings_clicked.connect(self._show_hat_popover)
+        self.message_panel.message_selected.connect(self._on_message_selected)
+        self.message_panel.message_updated.connect(self._on_message_updated)
+        self.inspector.closed.connect(self._close_inspector)
+        self.waterfall_panel.rf_mode_changed.connect(lambda m: self._save_ui_value("rf_mode", m))
+        self.waterfall_panel.rf_extras_changed.connect(lambda x: self._save_ui_value("rf_sensor_extras", x))
+        self.waterfall_panel.device_present_changed.connect(self._on_rf_device)
+        self.waterfall_panel.sensor_count_changed.connect(self.stats_strip.set_sensor_count)
+        self.bridge.sniffer_radios.connect(self._on_sniffer_radios)
+        self.top_bar.radios.profile_chosen.connect(self._on_radio_profile_chosen)
+        self.serial_drawer.toggled.connect(self._on_serial_toggled)
+        self.waterfall_panel.graph_width_changed.connect(lambda w: self._remember("ui_rf_graph_width", w))
+        self.waterfall_panel.gain_changed.connect(lambda g: self._remember("sdr_gain", g))
+
     # ---- settings dialog --------------------------------------------------
 
     def _settings_dialog_size(self):
@@ -419,16 +449,21 @@ class MainWindow(QMainWindow):
         return None
 
     def _open_settings_dialog(self):
+        counts, unknown = self.message_panel.channel_stats()
         dialog = SettingsDialog(
             self.config_data,
             list_serial_ports(),
             self.gps_configured,
             self.ingest_configured,
             parent=self,
+            channel_counts=counts,
+            unknown_hashes=unknown,
+            find_channels=lambda entries: self.message_panel.crack_channels(entries, parent=dialog),
+            sent={"wdgwars": self.wdgwars_sent_total, "ingest": self.ingest_sent_total},
         )
         size = self._settings_dialog_size()
         if size is not None:
-            dialog.resize(*size)
+            dialog.fit_small(*size)
         self._settings_dialog = dialog
         try:
             if dialog.exec() == QDialog.Accepted:
@@ -493,12 +528,14 @@ class MainWindow(QMainWindow):
         if connected:
             self._update_brand_status(True, self.config_data["serial_device"])
             self.live_pill.set_connected(True)
+            self._session_timer(True)
         self._set_connected_controls_state(connected)
         if payload == "Disconnected":
             self.waterfall_panel.set_live(False)  # frees the RTL-SDR
             self._update_brand_status(False)
             self._close_session_log()
             self.live_pill.set_connected(False)
+            self._session_timer(False)
 
     def _on_error(self, payload):
         self._log_line(f"-- Error: {payload} --")
@@ -509,6 +546,7 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.waterfall_panel.set_live(False)
         self._close_session_log()
+        self._session_timer(False)
 
     def _on_ble_devices(self, payload):
         self._ble_entries = [format_ble_entry(name, addr) for name, addr in payload]
@@ -522,18 +560,78 @@ class MainWindow(QMainWindow):
     def _on_sniffer_profiles(self, payload):
         self.waterfall_panel.set_profiles(payload)
         self._set_waterfall_visible(True)
+        self._profile_families = {p["name"]: p.get("family", "") for p in payload}
+        self._show_radios()
 
     def _on_sniffer_stat(self, payload):
         bar = getattr(self, "sniffer_stats", None)
         if bar is not None:
             bar.add_stat(payload)
+        self._show_radio_rx(payload.get("radio") or "", payload.get("ok"))
+        self.message_panel.set_noise_floor(self._noise_floor())
+
+    def _on_sniffer_radios(self, radios):
+        self._radios = list(radios)
+        self._show_radios()
+
+    def _show_radios(self):
+        """Multi-radio (redesign 1d): a chip per radio in the top bar and
+        Radio/Profile columns in the messages. Overridden by PocketMainWindow."""
+        radios = getattr(self, "_radios", [])
+        self.top_bar.radios.profile_choices = [(p.key, p.name, p.freq) for p in all_profiles(self.config_data)]
+        self.top_bar.radios.set_radios(radios, getattr(self, "_profile_families", {}))
+        self.message_panel.set_radio_numbers({r["label"]: n for n, r in enumerate(radios, start=1)})
+
+    def _on_radio_profile_chosen(self, label, key):
+        """A radio chip's menu: pin that radio to one profile ("" = back to
+        its automatic share). Applies live through the sniffer worker."""
+        overrides = dict(self.config_data.get("sniffer_radio_overrides") or {})
+        if key:
+            # One radio per profile: whichever radio had it goes back to automatic.
+            overrides = {lbl: k for lbl, k in overrides.items() if k != key}
+            overrides[label] = key
+        else:
+            overrides.pop(label, None)
+        if overrides == (self.config_data.get("sniffer_radio_overrides") or {}):
+            return
+        name = next((p.name for p in all_profiles(self.config_data) if p.key == key), key)
+        self._log_line(f"-- {label}: listening on {name} --" if key else f"-- {label}: back to automatic --")
+        self._apply_settings({**self.config_data, "sniffer_radio_overrides": overrides})
+
+    def _show_radio_rx(self, label, count):
+        """Overridden by PocketMainWindow."""
+        if count is not None:
+            self.top_bar.radios.set_rx(label, count)
+
+    def _save_ui_value(self, key, value):
+        if self.config_data.get(key) != value:
+            self.config_data[key] = value
+            save_config(self.config_data)
+
+    def _on_rf_device(self, present):
+        """An RTL-SDR plugged in (or unplugged): the RF band shows for it
+        even with no LoRa device, for the waterfall or sensor decoding."""
+        self._rf_device = present
+        self._set_waterfall_visible(self.waterfall_panel._live)
 
     def _set_waterfall_visible(self, visible):
-        """Overridden by PocketMainWindow, where the waterfall is a tab."""
-        self.waterfall_panel.setVisible(visible)
-        bar = getattr(self, "sniffer_stats", None)
-        if bar is not None:
-            bar.setVisible(visible)
+        """Show/hide the RF band. Overridden by PocketMainWindow, where the
+        waterfall is a tab."""
+        if self.config_data.get("mode") == "hat" and self.HAS_HAT_UI:
+            visible = True  # the HAT's own waterfall lives there
+        visible = visible or self._rf_device
+        if visible != self.rf_stack.isVisible():
+            self.rf_stack.setVisible(visible)
+            self._apply_splitter_sizes()
+
+    def _session_timer(self, running):
+        """Overridden by PocketMainWindow (no stats strip there)."""
+        if running:
+            self.stats_strip.start_session()
+        else:
+            self.stats_strip.stop_session()
+            self._on_sniffer_radios([])  # disconnected: no radio chips
+            self.message_panel.set_noise_floor(None)
 
     def _on_wdgwars_sent(self, payload):
         self.wdgwars_sent_total += payload
@@ -553,21 +651,22 @@ class MainWindow(QMainWindow):
         self.advertise_panel.set_enabled(device_commands)
 
     def _update_brand_status(self, connected, port=None):
-        mono = pick_mono_font()
+        """Device chip text. Overridden by PocketMainWindow (status label)."""
         if connected and port:
-            self.device_arrow_label.setStyleSheet(f"font-family: '{mono}'; font-size: 12px; color: {ACCENT};")
             kind, target = parse_device_selection(port)
             if kind == "ble":
-                self.status_label.setText(f"BLE · {target}")
+                text, detail = target, "BLE"
             elif kind == "usb_radio":
-                self.status_label.setText(f"USB LoRa · {target or 'CH341'}")
+                text, detail = target or "CH341", "USB LoRa"
             elif kind == "sniffer_group":
-                self.status_label.setText("all LoRa sniffers")
+                text, detail = "All LoRa sniffers", "Hop" if self.config_data.get("sniffer_mode") == "hop" else "Fixed"
+            elif getattr(self.worker, "is_sniffer", False):
+                text, detail = target, "LoRa sniffer"
             else:
-                self.status_label.setText(f"{target} · {SERIAL_BAUD}")
+                text, detail = target, f"Companion · {SERIAL_BAUD}"
+            self.connection_panel.set_status(True, text, detail)
         else:
-            self.device_arrow_label.setStyleSheet(f"font-family: '{mono}'; font-size: 12px; color: {DIM};")
-            self.status_label.setText("not connected")
+            self.connection_panel.set_status(False)
 
     def _refresh_ports(self):
         ports = list_serial_ports()
@@ -593,25 +692,19 @@ class MainWindow(QMainWindow):
         self.gps_worker.start()
 
     def _update_gps_display(self):
-        if self.gps_fix_label is None:
-            return
-        mono = pick_mono_font()
-        gps_style = "font-family: '{}'; font-size: 15px; font-weight: 600; color: {};"
-        if not self.config_data.get("gps_enabled", True):
-            self.gps_fix_label.setStyleSheet(gps_style.format(mono, DIM))
-            self.gps_fix_label.setText("disabled")
+        """Top bar GPS indicator. Overridden by PocketMainWindow."""
+        if not self.gps_configured:
+            self.top_bar.set_gps("hidden")
+        elif not self.config_data.get("gps_enabled", True):
+            self.top_bar.set_gps("off", "disabled")
         elif self.gps_worker is None:
-            self.gps_fix_label.setStyleSheet(gps_style.format(mono, DIM))
-            self.gps_fix_label.setText("not configured")
+            self.top_bar.set_gps("off", "no port set")
         else:
             fix = self.gps_state.fix
             if fix:
-                lat, lon = fix
-                self.gps_fix_label.setStyleSheet(gps_style.format(mono, ACCENT))
-                self.gps_fix_label.setText(f"{lat:.5f}, {lon:.5f}")
+                self.top_bar.set_gps("fix", f"{fix[0]:.4f}, {fix[1]:.4f}")
             else:
-                self.gps_fix_label.setStyleSheet(gps_style.format(mono, DIM))
-                self.gps_fix_label.setText("waiting for fix...")
+                self.top_bar.set_gps("nofix")
 
     def _toggle_connection(self):
         if self.worker is None:
@@ -679,20 +772,19 @@ class MainWindow(QMainWindow):
 
     def _set_mode(self, mode):
         hat = mode == "hat"
-        index = next(i for i, (key, _) in enumerate(_MODES) if key == mode)
-        if self.mode_combo.currentIndex() != index:
-            self.mode_combo.blockSignals(True)
-            self.mode_combo.setCurrentIndex(index)
-            self.mode_combo.blockSignals(False)
-        self.hat_panel.setVisible(hat)
-        self.connection_panel.setVisible(not hat)
-        self.advertise_panel.setVisible(not hat)
-        self.content_stack.setCurrentIndex(1 if hat else 0)
-        if not hat:
-            self._stop_hat()
+        self.connection_panel.set_mode(mode)
+        self.top_bar.set_hat_mode(hat)
+        self.body_stack.setCurrentIndex(1 if hat else 0)
+        self.rf_stack.setCurrentIndex(1 if hat else 0)
         if self.config_data.get("mode") != mode:
             self.config_data["mode"] = mode
             save_config(self.config_data)
+        if hat:
+            self._set_waterfall_visible(True)
+        else:
+            self._stop_hat()
+            self.hat_popover.hide()
+            self._set_waterfall_visible(self.waterfall_panel._live)
 
     def _toggle_hat(self):
         if self.lora_worker is None:
@@ -717,6 +809,7 @@ class MainWindow(QMainWindow):
         self.hat_panel.set_running(True)
         self.packet_table.set_status(f"starting · {settings.label}", active=True)
         self.live_pill.set_connected(True)
+        self.connection_panel.set_status(True, "LoRa HAT", settings.title)
 
     def _start_waterfall(self, settings):
         # The radio panel's sniffer waterfall may be using the same dongle.
@@ -758,6 +851,7 @@ class MainWindow(QMainWindow):
         self.packet_table.set_status("stopped")
         if self.worker is None:
             self.live_pill.set_connected(False)
+            self.connection_panel.set_status(False)
 
     def _on_hat_settings_changed(self):
         self.config_data.update(self.hat_panel.values())
