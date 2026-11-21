@@ -97,18 +97,24 @@ class StatsStrip(QFrame):
         nrow.addWidget(mt)
         row.addWidget(nodes)
         self._node_items = list(self._nodes.values())
+        # Devices rtl_433 decoded this session (RF band, Sensors mode).
+        self.sensors = _Item("SENSORS", "0")
+        self.sensors.setToolTip("ISM devices decoded by rtl_433 this session")
+        self.sensors.setVisible(False)
+        row.addWidget(self.sensors)
 
         row.addStretch(1)
         self.session = _Item("SESSION", "--:--:--")
         row.addWidget(self.session)
         self._session_start = None
+        self._sensor_count = 0
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(1000)
 
         # Hidden first when the window narrows: rightmost node counts, then
         # the less important sniffer counters.
-        self._shed_order = [self._nodes[MESHTASTIC_COUNT_KEY], self._nodes[node_type_last()],
+        self._shed_order = [self.sensors, self._nodes[MESHTASTIC_COUNT_KEY], self._nodes[node_type_last()],
                             self.hops, self.pre, self.session]
         self._set_sniffer_visible(False)
         self.update_counts({k: 0 for k in self._nodes})
@@ -138,6 +144,11 @@ class StatsStrip(QFrame):
         for item in self._sniffer_items:
             item.set_value("—")
         self._set_sniffer_visible(False)
+
+    def set_sensor_count(self, count):
+        self._sensor_count = count
+        self.sensors.set_value(count, ACCENT if count else None)
+        self._shed()
 
     def _set_sniffer_visible(self, visible):
         self._sniffer_shown = visible
@@ -203,6 +214,8 @@ class StatsStrip(QFrame):
         for item in self._shed_order:
             if item in self._sniffer_items:
                 item.setVisible(self._sniffer_shown)
+            elif item is self.sensors:
+                item.setVisible(self._sensor_count > 0)
             else:
                 item.setVisible(True)
         layout = self.layout()

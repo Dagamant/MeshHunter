@@ -39,7 +39,6 @@ from ..theme import (
     LOG_WARN,
     MESH_MESHCORE,
     MESH_MESHTASTIC,
-    PANEL_2,
     SWITCH_TRACK_ON,
     TXT,
     pick_mono_font,
@@ -526,18 +525,20 @@ class RadioBadge(QLabel):
                            f" color: {ACCENT_LIGHT}; background: {SWITCH_TRACK_ON}; border-radius: 4px;")
 
 
-class RadioChip(QFrame):
-    """[n] ttyACM1  MeshCore US  fixed  214 rx"""
+class RadioChip(QToolButton):
+    """[n] ttyACM1  MeshCore US  fixed  214 rx  ▾ -- its menu picks what
+    that radio listens to (one profile, or its automatic share)."""
 
-    def __init__(self, number, parent=None):
+    def __init__(self, number, owner, parent=None):
         super().__init__(parent)
+        self.owner = owner  # RadioChips: profile choices + the chosen signal
         self.setObjectName("radioChip")
-        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setPopupMode(QToolButton.InstantPopup)
         self.setFixedHeight(32)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.setStyleSheet(f"#radioChip {{ background: {PANEL_2}; border: 1px solid {LINE}; border-radius: 8px; }}")
         row = QHBoxLayout(self)
-        row.setContentsMargins(7, 0, 10, 0)
+        row.setContentsMargins(7, 0, 9, 0)
         row.setSpacing(7)
         row.addWidget(RadioBadge(number))
         self.port = _label("", TXT, 12)
@@ -546,8 +547,38 @@ class RadioChip(QFrame):
         self.rx = _label("", ACCENT, 11)
         for w in (self.port, self.profile, self.state, self.rx):
             row.addWidget(w)
+        row.addWidget(_label("▾", DIM, 11))
+        self._radio = {}
+        self._menu = QMenu(self)
+        self._menu.aboutToShow.connect(self._rebuild_menu)
+        self.setMenu(self._menu)
+
+    def sizeHint(self):
+        return QSize(self.layout().sizeHint().width() + 2, 32)
+
+    def _rebuild_menu(self):
+        menu = self._menu
+        menu.clear()
+        label = self._radio.get("label", "")
+        pinned = self._radio.get("pinned")
+        heading = menu.addAction(f"{label} listens on")
+        heading.setEnabled(False)  # a section header renders as a bare line here
+        group = QActionGroup(menu)
+        auto = QAction("Automatic (share the hop list)", menu, checkable=True)
+        auto.setChecked(not pinned)
+        auto.triggered.connect(lambda: self.owner.profile_chosen.emit(label, ""))
+        group.addAction(auto)
+        menu.addAction(auto)
+        menu.addSeparator()
+        for key, name, freq in self.owner.profile_choices:
+            act = QAction(f"{short_profile(name)}  ·  {freq:.3f} MHz", menu, checkable=True)
+            act.setChecked(key == pinned)
+            act.triggered.connect(lambda _=False, k=key: self.owner.profile_chosen.emit(label, k))
+            group.addAction(act)
+            menu.addAction(act)
 
     def set_radio(self, radio, families, rx=None):
+        self._radio = dict(radio)
         self.port.setText(radio["label"])
         names = radio.get("profiles") or []
         if names:
@@ -559,11 +590,15 @@ class RadioChip(QFrame):
         self.profile.setStyleSheet(f"font-family: '{pick_mono_font()}'; font-size: 11px; color: {color};"
                                    " background: transparent;")
         listening = radio.get("state") == "listening"
-        self.state.setText(("fixed" if len(names) == 1 else "hopping") if listening and names
-                           else radio.get("state", ""))
+        if listening and names:
+            state = "set" if radio.get("pinned") else "fixed" if len(names) == 1 else "hopping"
+        else:
+            state = radio.get("state", "")
+        self.state.setText(state)
         self.set_rx(rx)
         self._fit()
-        tip = [f"{radio.get('kind', '')} on {radio.get('port', '')}", f"state: {radio.get('state', '')}"]
+        tip = [f"{radio.get('kind', '')} on {radio.get('port', '')}", f"state: {radio.get('state', '')}",
+               "Click to choose what this radio listens on"]
         if radio.get("detail"):
             tip.append(radio["detail"])
         if names:
@@ -586,14 +621,16 @@ class RadioChip(QFrame):
         for lbl in (self.port, self.profile, self.state, self.rx):
             lbl.ensurePolished()
             lbl.updateGeometry()
-        self.ensurePolished()  # the chip's own border comes from its stylesheet too
+        self.ensurePolished()
         self.layout().invalidate()
         self.layout().activate()
-        self.setFixedWidth(self.sizeHint().width())
+        self.setFixedWidth(self.sizeHint().width())  # +2 for the 1 px border
 
 
 class RadioChips(QWidget):
     """One RadioChip per sniffer radio; only shown with two or more."""
+
+    profile_chosen = Signal(str, str)  # radio label, profile key ("" = automatic)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -603,6 +640,7 @@ class RadioChips(QWidget):
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.chips = {}
         self._compact = False
+        self.profile_choices = []  # [(key, name, freq MHz)] for the chips' menus
         self.setVisible(False)
 
     def set_radios(self, radios, families):
@@ -615,7 +653,7 @@ class RadioChips(QWidget):
         self.chips = {}
         multi = len(radios) > 1
         for n, radio in enumerate(radios if multi else [], start=1):
-            chip = RadioChip(n)
+            chip = RadioChip(n, self)
             old = rx.get(radio["label"], "")
             chip.set_radio(radio, families, int(old.split()[0]) if old else None)
             chip.set_compact(self._compact)

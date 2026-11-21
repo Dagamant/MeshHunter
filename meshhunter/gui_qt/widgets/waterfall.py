@@ -14,13 +14,17 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QSizePolicy,
     QSplitter,
     QStackedWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from ...core.band_plan import BANDS
+from ...core.rf_sensors import EXTRA_HOPS, Rtl433Worker, SensorLog, classify, readings, rtl_433_path
 from ...core.rtlsdr import SweepWaterfallWorker, rtlsdr_device_count
 from ...core.waterfall_model import NOISE_HEADROOM_DB, ROWS_PER_SECOND, SCALE_SPAN_DB, WaterfallModel
 from ..theme import ACCENT, DANGER_HOVER_BORDER, DIM, INK, LINE, LOG_WARN, TXT, pick_mono_font
@@ -204,6 +208,18 @@ class WaterfallPanel(QWidget):
     # number so rows from a just-stopped worker are dropped.
     _sdr_row = Signal(object)
     _sdr_error = Signal(object)
+    # Same for the rtl_433 worker (Sensors mode).
+    _rf_event = Signal(object)
+    _rf_hop = Signal(object)
+    _rf_error = Signal(object)
+
+    # Sensors mode (desktop only): mode/extras changes to save in config,
+    # whether an RTL-SDR is plugged in (the RF band shows for it alone),
+    # and how many devices were decoded this session.
+    rf_mode_changed = Signal(str)
+    rf_extras_changed = Signal(list)
+    device_present_changed = Signal(bool)
+    sensor_count_changed = Signal(int)
 
     POLL_MS = 3000
     RETRY_AFTER_ERROR_S = 30
@@ -217,8 +233,17 @@ class WaterfallPanel(QWidget):
     GAINS = (("Gain AGC", None), ("Gain 20 dB", 20.0), ("Gain 30 dB", 30.0), ("Gain 40 dB", 40.0),
              ("Gain 49 dB", 49.6))
 
-    def __init__(self, parent=None, graph_width=None, gain_db=None):
+    def __init__(self, parent=None, graph_width=None, gain_db=None, *, sensors=False, rf_mode="waterfall",
+                 rf_extras=(), rf_dwell_s=20, rtl_433_exe=""):
         super().__init__(parent)
+        # sensors=True (desktop): the Waterfall | Sensors switch, and the RF
+        # band runs from an RTL-SDR alone, without a sniffer.
+        self.sensors_enabled = sensors
+        self.rf_mode = rf_mode if sensors else "waterfall"
+        self._rf_extras = list(rf_extras)
+        self._rf_dwell_s = rf_dwell_s
+        self._rtl_433_exe = rtl_433_exe
+        self.gps_state = None  # set by the main window; tags sensor decodes
         self.setObjectName("rfBand")
         self.setAttribute(Qt.WA_StyledBackground, True)
         mono = pick_mono_font()
@@ -242,6 +267,39 @@ class WaterfallPanel(QWidget):
         header.addLayout(self.radio_row)
         self._radio_chips = []
         header.addStretch(1)
+        from .top_bar import Segmented
+
+        self.rf_switch = Segmented(["Waterfall", "Sensors"], height=22, checkable=True)
+        for i, btn in enumerate(self.rf_switch.buttons):
+            btn.setAutoExclusive(True)
+            btn.setStyleSheet(btn.styleSheet().replace("font-size: 12px", "font-size: 11px"))
+            btn.clicked.connect(lambda _=False, m=("waterfall", "sensors")[i]: self.set_rf_mode(m))
+        self.rf_switch.buttons[1].setToolTip(
+            "Decode weather stations, utility meters and other ISM sensors with rtl_433")
+        self.rf_switch.buttons[1 if self.rf_mode == "sensors" else 0].setChecked(True)
+        self.rf_switch.setVisible(sensors)
+        header.addWidget(self.rf_switch)
+        self.bands_button = QToolButton()
+        self.bands_button.setObjectName("sentButton")
+        self.bands_button.setText("Bands ▾")
+        self.bands_button.setFixedHeight(22)
+        self.bands_button.setPopupMode(QToolButton.InstantPopup)
+        self.bands_button.setStyleSheet(f"font-family: '{mono}'; font-size: 11px; padding: 0 8px;")
+        self.bands_button.setToolTip("Bands rtl_433 hops between. 902–928 MHz always; the others are "
+                                     "outside 33 cm, so a 915 MHz antenna hears them less well.")
+        bands_menu = QMenu(self.bands_button)
+        always = bands_menu.addAction("902–928 MHz: meters, weather, doorbells (always)")
+        always.setEnabled(False)
+        bands_menu.addSeparator()
+        self._extra_actions = {}
+        for key, (_, _, what) in EXTRA_HOPS.items():
+            act = bands_menu.addAction(what)
+            act.setCheckable(True)
+            act.setChecked(key in self._rf_extras)
+            act.toggled.connect(self._on_extras_toggled)
+            self._extra_actions[key] = act
+        self.bands_button.setMenu(bands_menu)
+        header.addWidget(self.bands_button)
         self.mode_label = QLabel("")
         self.mode_label.setStyleSheet(f"font-family: '{mono}'; font-size: 11px; color: {DIM};")
         header.addWidget(self.mode_label)
@@ -257,8 +315,6 @@ class WaterfallPanel(QWidget):
         self.gain_combo.setVisible(False)  # only with an RTL-SDR running
         header.addWidget(self.gain_combo)
         # Small window: only one of the two views fits; pick it here.
-        from .top_bar import Segmented
-
         self.view_switch = Segmented(["Waterfall", "Signal/noise"], height=22, checkable=True)
         self.view_switch.buttons[0].setChecked(True)
         for i, btn in enumerate(self.view_switch.buttons):
@@ -282,10 +338,14 @@ class WaterfallPanel(QWidget):
                                           trace_color=LOG_WARN, trace_fill=True, show_bands=True)
         self.sdr_canvas.setMinimumHeight(0)
         self.sdr_canvas.idle_text = "starting RTL-SDR…"
+        from .sensor_table import SensorTable
+
+        self.sensor_table = SensorTable()
         self.wf_stack = QStackedWidget()
         self.wf_stack.addWidget(self.view)
         self.wf_stack.addWidget(self.sdr_canvas)
-        for widget in (self.view, self.sdr_canvas):
+        self.wf_stack.addWidget(self.sensor_table)
+        for widget in (self.view, self.sdr_canvas, self.sensor_table):
             widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         self.wf_stack.setMinimumWidth(200)
         self.noise_graph = NoiseGraph()
@@ -315,9 +375,24 @@ class WaterfallPanel(QWidget):
         self._retry_at = 0.0
         self._sdr_row.connect(self._on_sdr_row)
         self._sdr_error.connect(self._on_sdr_error)
+        # rtl_433 state.
+        self._rf_worker = None
+        self._rf_gen = 0
+        self._rf_hop_info = None  # (freq Hz, sample rate, dwell s, description, started monotonic)
+        self._rf_status = ""  # last error / busy text
+        self._rf_missing = False  # rtl_433 not installed: don't keep retrying
+        self._sensor_log = None  # SensorLog, created on first use (loads the CSV)
+        self._device_present = None
+        self._rf_event.connect(self._on_rf_event)
+        self._rf_hop.connect(self._on_rf_hop)
+        self._rf_error.connect(self._on_rf_error)
+        self._header_timer = QTimer(self)  # hop countdown
+        self._header_timer.timeout.connect(self._show_source)
+        self._header_timer.start(1000)
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_sdr)
         self._poll_timer.start(self.POLL_MS)
+        self._update_graph_visible()
         self._show_source()
 
     def showEvent(self, event):
@@ -333,21 +408,34 @@ class WaterfallPanel(QWidget):
         """Small window (redesign 1c): show the waterfall or the graph, not
         both, chosen with the header's segmented switch."""
         self._small = small
-        self.view_switch.setVisible(small)
+        self.view_switch.setVisible(small and self._graph_shown())
         self.mode_label.setVisible(not small)
         if small:
             self._show_single(self._single)
         else:
             self.wf_stack.setVisible(True)
-            self.noise_graph.setVisible(True)
+            self.noise_graph.setVisible(self._graph_shown())
             self._apply_graph_width()
 
     def _show_single(self, index):
         self._single = index
         self.view_switch.buttons[index].setChecked(True)
         if self._small:
-            self.wf_stack.setVisible(index == 0)
-            self.noise_graph.setVisible(index == 1)
+            graph = index == 1 and self._graph_shown()  # no sniffer: nothing to graph
+            self.wf_stack.setVisible(not graph)
+            self.noise_graph.setVisible(graph)
+
+    def _graph_shown(self):
+        """The signal/noise graph is the sniffer's: hidden while the RF band
+        runs from the RTL-SDR alone."""
+        return self._live or not self.sensors_enabled
+
+    def _update_graph_visible(self):
+        if self._small:
+            self.view_switch.setVisible(self._graph_shown())
+            self._show_single(self._single)
+        else:
+            self.noise_graph.setVisible(self._graph_shown())
 
     def _apply_graph_width(self):
         if self._small:
@@ -369,6 +457,8 @@ class WaterfallPanel(QWidget):
         if self._sdr_worker is not None:
             self._stop_sdr()
             self._poll_sdr()
+        if self._rf_worker is not None:
+            self._rf_worker.gain_db = gain  # from the next hop
 
     # ---- sniffer feed ------------------------------------------------------
 
@@ -379,6 +469,7 @@ class WaterfallPanel(QWidget):
             (p["freq"] * 1e6, p["bw"] * 1e3, p["name"]) for p in self._profiles
         ])
         self._update_mesh_bands()
+        self._update_graph_visible()
         if self._sdr_worker is not None and self._sweep_range() != self._sdr_key:
             self._stop_sdr()  # restarted on the new range below
         self._poll_sdr()
@@ -438,6 +529,23 @@ class WaterfallPanel(QWidget):
         self.view.add_event(payload)
         self.noise_graph.add_event(payload)
 
+    def _sensors_text(self):
+        if not self._device_present:
+            return "rtl_433 · no RTL-SDR plugged in"
+        if self._rf_missing:
+            return "rtl_433 · not installed"
+        n = self.sensor_table.device_count()
+        devices = f"{n} device" + ("" if n == 1 else "s")
+        if self._rf_status:
+            return f"rtl_433 · {self._rf_status} · {devices}"
+        hop = self._rf_hop_info
+        if hop is None:
+            return f"rtl_433 · starting… · {devices}"
+        freq, _, dwell, what, started = hop
+        left = max(0, int(dwell - (time.monotonic() - started)))
+        hops = 3 + len(self._rf_extras)
+        return f"rtl_433 · {freq / 1e6:.3f} MHz · next hop in {left} s · {hops} bands · {devices}"
+
     def add_stat(self, payload):
         self.noise_graph.add_stat(payload)
 
@@ -454,42 +562,166 @@ class WaterfallPanel(QWidget):
 
     def set_live(self, live):
         """False when the sniffer disconnects: frees the RTL-SDR (the last
-        picture stays up). set_profiles() turns it back on."""
+        picture stays up) -- unless the RF band runs standalone (desktop),
+        where the waterfall falls back to the whole 902-928 MHz band.
+        set_profiles() turns it back on."""
         self._live = live and bool(self._profiles)
-        if not self._live:
+        self._update_graph_visible()
+        if not self._live and not self.sensors_enabled:
             self._stop_sdr()
+        else:
+            if self._sdr_worker is not None and self._sweep_range() != self._sdr_key:
+                self._stop_sdr()
+            self._poll_sdr()
 
     def set_sdr_allowed(self, allowed):
         """LoRa HAT mode drives the same dongle for its own waterfall."""
         self._sdr_allowed = allowed
         if not allowed:
             self._stop_sdr()
+            self._stop_rf()
         else:
             self._poll_sdr()
 
     def shutdown(self):
         self._poll_timer.stop()
         self._live = False
+        self._sdr_allowed = False
         self._stop_sdr()
+        self._stop_rf()
 
     def _sweep_range(self):
-        if not self._profiles:
-            return None
+        if not (self._live and self._profiles):
+            if not self.sensors_enabled:
+                return None
+            # Standalone: the whole 902-928 MHz ISM allocation.
+            ism = next(b for b in BANDS if b.kind == "ism" and b.lo == 902.0)
+            return (ism.lo * 1e6, ism.hi * 1e6)
         lo = min(p["freq"] * 1e6 - p["bw"] * 5e2 for p in self._profiles) - self.EDGE_MARGIN_HZ
         hi = max(p["freq"] * 1e6 + p["bw"] * 5e2 for p in self._profiles) + self.EDGE_MARGIN_HZ
         return (lo, hi)
 
+    def _rf_wanted(self):
+        """Should the dongle be running at all?"""
+        return self._sdr_allowed and (self._live or self.sensors_enabled)
+
     def _poll_sdr(self):
-        if not (self._live and self._sdr_allowed):
-            self._stop_sdr()
-            return
-        if self._sdr_worker is not None:
-            return  # an unplug shows up as a worker error
         present = rtlsdr_device_count() > 0
-        if not present:
-            self._retry_at = 0.0  # unplugged: a replug starts straight away
-        elif time.monotonic() >= self._retry_at:
-            self._start_sdr()
+        if present != self._device_present:
+            self._device_present = present
+            self.device_present_changed.emit(present)
+        if not self._rf_wanted():
+            self._stop_sdr()
+            self._stop_rf()
+            return
+        if self.rf_mode == "sensors":
+            self._stop_sdr()
+            if self._rf_worker is None and present and not self._rf_missing and time.monotonic() >= self._retry_at:
+                self._start_rf()
+        else:
+            self._stop_rf()
+            if self._sdr_worker is not None:
+                return  # an unplug shows up as a worker error
+            if not present:
+                self._retry_at = 0.0  # unplugged: a replug starts straight away
+            elif time.monotonic() >= self._retry_at:
+                self._start_sdr()
+        self._show_page()
+        self._show_source()
+
+    def set_rf_mode(self, mode):
+        """Waterfall (spectrum) or Sensors (rtl_433 decoding)."""
+        if mode not in ("waterfall", "sensors") or (mode == "sensors" and not self.sensors_enabled):
+            return
+        self.rf_switch.buttons[1 if mode == "sensors" else 0].setChecked(True)
+        if mode == self.rf_mode:
+            return
+        self.rf_mode = mode
+        self._retry_at = 0.0
+        self._rf_missing = False
+        self.rf_mode_changed.emit(mode)
+        self._poll_sdr()
+
+    def _on_extras_toggled(self, *_):
+        self._rf_extras = [k for k, act in self._extra_actions.items() if act.isChecked()]
+        if self._rf_worker is not None:
+            self._rf_worker.extras = list(self._rf_extras)  # from the next hop
+        self.rf_extras_changed.emit(list(self._rf_extras))
+        self._show_source()
+
+    def _show_page(self):
+        if self.rf_mode == "sensors" and self._rf_wanted():
+            self.wf_stack.setCurrentWidget(self.sensor_table)
+        elif self._sdr_worker is not None:
+            self.wf_stack.setCurrentWidget(self.sdr_canvas)
+        else:
+            self.wf_stack.setCurrentWidget(self.view)
+
+    # ---- rtl_433 (Sensors mode) ------------------------------------------
+
+    def _start_rf(self):
+        if self._sensor_log is None:
+            self._sensor_log = SensorLog()
+        self._rf_gen += 1
+        gen = self._rf_gen
+        exe = rtl_433_path({"rtl_433_path": self._rtl_433_exe})
+        worker = Rtl433Worker(
+            on_event=lambda e: self._rf_event.emit((gen, e)),
+            on_hop=lambda *hop: self._rf_hop.emit((gen, hop)),
+            on_error=lambda msg: self._rf_error.emit((gen, msg)),
+            extras=self._rf_extras, dwell_s=self._rf_dwell_s, gain_db=self.gain_combo.currentData(),
+            gps_state=self.gps_state, exe=exe,
+        )
+        self._rf_worker = worker
+        self._rf_status = ""
+        self._rf_hop_info = None
+        if exe:
+            self.sensor_table.set_empty_text("Listening… sensors appear here as they transmit.\n"
+                                             "Weather stations report every 16–60 s; meters every 30 s or so.")
+            self.log.emit("-- RTL-SDR: decoding sensors with rtl_433 --")
+        worker.start()
+
+    def _stop_rf(self):
+        worker, self._rf_worker = self._rf_worker, None
+        self._rf_gen += 1
+        self._rf_hop_info = None
+        if worker is not None:
+            worker.stop()
+            worker.join(timeout=2.0)
+        if self._sensor_log is not None:
+            self._sensor_log.save()
+
+    def _on_rf_hop(self, payload):
+        gen, (freq, rate, dwell, what) = payload
+        if gen == self._rf_gen:
+            self._rf_hop_info = (freq, rate, dwell, what, time.monotonic())
+            self._rf_status = ""
+            self._show_source()
+
+    def _on_rf_event(self, payload):
+        gen, event = payload
+        if gen != self._rf_gen or self._sensor_log is None:
+            return
+        before = len(self._sensor_log.session_keys)
+        row = self._sensor_log.add(event)
+        self.sensor_table.add(row)
+        if len(self._sensor_log.session_keys) > before:  # first time this session
+            text = readings(event)
+            self.log.emit(f"-- RF sensor: {classify(event.get('model'))} {event.get('model')} "
+                          f"id {event.get('id', '?')}" + (f" · {text}" if text else "") + " --")
+            self.sensor_count_changed.emit(len(self._sensor_log.session_keys))
+        self._show_source()
+
+    def _on_rf_error(self, payload):
+        gen, msg = payload
+        if gen != self._rf_gen:
+            return
+        self._rf_status = msg
+        if "isn't installed" in msg:
+            self._rf_missing = True
+            self._rf_worker = None
+            self.sensor_table.set_empty_text(msg)
+        self.log.emit(f"-- rtl_433: {msg} --")
         self._show_source()
 
     def _start_sdr(self):
@@ -509,7 +741,7 @@ class WaterfallPanel(QWidget):
         self._sdr_worker = worker
         self._sdr_key = (lo, hi)
         worker.start()
-        self.wf_stack.setCurrentWidget(self.sdr_canvas)
+        self._show_page()
         segs = len(worker.centers)
         how = "" if segs == 1 else f", sweeping {segs} segments"
         self.log.emit(
@@ -525,7 +757,7 @@ class WaterfallPanel(QWidget):
         if worker is not None:
             worker.stop()
             worker.join(timeout=1.5)
-        self.wf_stack.setCurrentWidget(self.view)
+        self._show_page()
         self._show_source()
 
     def _on_sdr_row(self, payload):
@@ -540,11 +772,18 @@ class WaterfallPanel(QWidget):
         self._sdr_worker = None
         self._sdr_key = None
         self._retry_at = time.monotonic() + self.RETRY_AFTER_ERROR_S
-        self.wf_stack.setCurrentWidget(self.view)
+        self._show_page()
         self.log.emit(f"-- RTL-SDR error: {msg} (using sniffer RSSI waterfall) --")
         self._show_source()
 
     def _show_source(self):
+        self.bands_button.setVisible(self.sensors_enabled and self.rf_mode == "sensors")
+        if self.rf_mode == "sensors" and self._rf_wanted():
+            self.source_label.setText(self._sensors_text())
+            self.gain_combo.setVisible(self._rf_worker is not None)
+            self.mode_label.setVisible(False)
+            return
+        self.mode_label.setVisible(not self._small)
         worker = self._sdr_worker
         if worker is not None:
             lo = (worker.center_hz - worker.span_hz / 2) / 1e6
@@ -553,6 +792,8 @@ class WaterfallPanel(QWidget):
         elif self._live:
             text = f"sniffer RSSI · {len(self._profiles)} profile" + ("" if len(self._profiles) == 1 else "s")
             text += " · no RTL-SDR"
+        elif self.sensors_enabled and self._device_present:
+            text = "RTL-SDR · starting…"
         else:
             text = ""
         self.source_label.setText(text)

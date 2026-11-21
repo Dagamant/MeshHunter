@@ -162,7 +162,45 @@ def profile_dict(profile):
     return asdict(profile)
 
 
-def assign_profiles(config, radio_count):
+def assign_profiles(config, radio_count, labels=None):
+    """Like _auto_assign, but a radio whose label is in the config's
+    sniffer_radio_overrides ({label: profile key}) is pinned to that one
+    profile; the other radios share the remaining profiles as usual.
+    `labels` are the radios' labels, in the same order as the result."""
+    overrides = config.get("sniffer_radio_overrides") or {}
+    by_key = profiles_by_key(config)
+    labels = list(labels or [])
+    pinned = {i: by_key[overrides[lbl]] for i, lbl in enumerate(labels[:radio_count])
+              if overrides.get(lbl) in by_key}
+    if radio_count <= 1 or not pinned:
+        if radio_count == 1 and 0 in pinned:
+            return [[pinned[0]]]
+        return _auto_assign(config, radio_count)
+    taken = {p.key for p in pinned.values()}
+    free = [i for i in range(radio_count) if i not in pinned]
+    rest = dict(config)
+    rest["sniffer_hop_profiles"] = [k for k in (config.get("sniffer_hop_profiles") or DEFAULT_HOP_PROFILES)
+                                    if k not in taken]
+    fixed = config.get("sniffer_fixed_profile") or DEFAULT_FIXED_PROFILE
+    if config.get("sniffer_mode", "hop") == "fixed" and fixed in taken:
+        # The fixed profile is already on a pinned radio: the others take
+        # the next hop-list profiles, one each.
+        rest["sniffer_mode"] = "hop"
+        rest["sniffer_hop_profiles"] = rest["sniffer_hop_profiles"][:len(free)]
+    # Anything left for the unpinned radios? (Fixed mode always has its
+    # fixed profile; hop mode needs a non-empty remaining hop list -- an
+    # empty one would otherwise fall back to the default profile.)
+    has_work = rest.get("sniffer_mode", "hop") == "fixed" or rest["sniffer_hop_profiles"]
+    shares = _auto_assign(rest, len(free)) if free and has_work else [[] for _ in free]
+    out = [[] for _ in range(radio_count)]
+    for i, profile in pinned.items():
+        out[i] = [profile]
+    for i, share in zip(free, shares):
+        out[i] = share
+    return out
+
+
+def _auto_assign(config, radio_count):
     """Share the selected profiles out between `radio_count` radios, as a
     list of per-radio profile lists (in hop order).
 

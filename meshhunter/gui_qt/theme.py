@@ -111,16 +111,17 @@ QFrame[class="VDivider"] {{
     background-color: {LINE};
     border: none;
 }}
-QToolButton#deviceChip {{
+QToolButton#deviceChip, QToolButton#radioChip {{
     background-color: {PANEL_2};
     border: 1px solid {LINE};
     border-radius: 8px;
     padding: 0 10px;
 }}
-QToolButton#deviceChip:hover, QToolButton#sentButton:hover {{
+QToolButton#deviceChip:hover, QToolButton#sentButton:hover, QToolButton#radioChip:hover {{
     border: 1px solid {ACCENT};
 }}
-QToolButton#deviceChip::menu-indicator, QToolButton#sentButton::menu-indicator {{
+QToolButton#deviceChip::menu-indicator, QToolButton#sentButton::menu-indicator,
+QToolButton#radioChip::menu-indicator {{
     image: none;
     width: 0;
 }}
@@ -416,7 +417,7 @@ QTableView#messages QHeaderView::section {{
 
 /* Desktop message list: painted rows (MessageRowDelegate draws the
    separator, hover and selection), so the view itself stays flat. */
-QTableView#messageList {{
+QTableView#messageList, QTableView#sensorList {{
     background-color: {TERMINAL_BG};
     color: {TXT};
     border: none;
@@ -424,7 +425,7 @@ QTableView#messageList {{
     selection-background-color: {ROW_SELECTED};
     selection-color: {TXT};
 }}
-QTableView#messageList QHeaderView::section {{
+QTableView#messageList QHeaderView::section, QTableView#sensorList QHeaderView::section {{
     background-color: {PANEL};
     color: {DIM};
     border: none;

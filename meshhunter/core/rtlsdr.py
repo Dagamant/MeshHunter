@@ -10,6 +10,8 @@ handful of calls a waterfall needs are stable across every librtlsdr.
 import ctypes
 import ctypes.util
 import math
+import os
+import sys
 import threading
 
 import numpy as np
@@ -36,6 +38,10 @@ def rtlsdr_device_count():
 
 def _load_lib():
     name = ctypes.util.find_library("rtlsdr")
+    if not name and sys.platform == "darwin":
+        # find_library doesn't search Apple Silicon Homebrew's prefix.
+        name = next((p for p in ("/opt/homebrew/lib/librtlsdr.dylib", "/usr/local/lib/librtlsdr.dylib")
+                     if os.path.exists(p)), None)
     if not name:
         raise RtlSdrError("librtlsdr not found (Debian/Raspberry Pi OS: sudo apt install rtl-sdr)")
     lib = ctypes.CDLL(name)

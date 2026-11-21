@@ -25,6 +25,18 @@ SNIFFER_DEFAULTS = {
     "sniffer_custom_profiles": [],
     "sniffer_meshcore_channels": [],
     "sniffer_meshtastic_channels": [],
+    # {radio label (e.g. "ttyACM1"): profile key}: with several radios,
+    # pins that radio to one profile (set from its chip in the top bar);
+    # the others share the rest. See sniffer_profiles.assign_profiles.
+    "sniffer_radio_overrides": {},
+    # RF band: "waterfall" (spectrum) or "sensors" (the RTL-SDR runs
+    # rtl_433 instead, see core/rf_sensors.py); extra bands to hop in
+    # sensors mode ("315", "345", "433"), seconds per hop, and an
+    # rtl_433 executable path when it isn't on PATH.
+    "rf_mode": "waterfall",
+    "rf_sensor_extras": [],
+    "rf_sensor_dwell_s": 20,
+    "rtl_433_path": "",
 }
 
 
@@ -41,9 +53,15 @@ def _sniffer_config(data):
             value = list(default)
         elif isinstance(default, str) and not isinstance(value, str):
             value = default
+        elif isinstance(default, dict):
+            value = {str(k): str(v) for k, v in value.items()} if isinstance(value, dict) else {}
         out[key] = value
     if out["sniffer_mode"] not in ("fixed", "hop"):
         out["sniffer_mode"] = "hop"
+    if out["rf_mode"] not in ("waterfall", "sensors"):
+        out["rf_mode"] = "waterfall"
+    out["rf_sensor_extras"] = [str(x) for x in out["rf_sensor_extras"] if str(x) in ("315", "345", "433")]
+    out["rf_sensor_dwell_s"] = max(5, out["rf_sensor_dwell_s"])
     return out
 
 # LoRa HAT (SX1262 + RTL-SDR) settings. Kept separate from the companion

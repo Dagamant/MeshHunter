@@ -57,6 +57,7 @@ from ..core.lora_worker import LoRaWorker, radio_settings_from_config
 from ..core.paths import LORA_PACKETS_CSV_PATH
 from ..core.rtlsdr import WaterfallWorker
 from ..core.session import SessionLog, device_label, make_worker, session_log_name
+from ..core.sniffer_profiles import all_profiles
 from ..core.uploads import flush_pending_ingest, flush_pending_wdgwars, pending_counts
 from ..core.worker import MeshCoreWorker
 from . import dialogs
@@ -219,8 +220,14 @@ class MainWindow(QMainWindow):
         self.body_stack.addWidget(self.packet_table)
 
         ui = self.config_data
-        self.waterfall_panel = WaterfallPanel(graph_width=ui.get("ui_rf_graph_width"), gain_db=ui.get("sdr_gain"))
+        self.waterfall_panel = WaterfallPanel(
+            graph_width=ui.get("ui_rf_graph_width"), gain_db=ui.get("sdr_gain"),
+            sensors=True, rf_mode=ui.get("rf_mode", "waterfall"), rf_extras=ui.get("rf_sensor_extras", []),
+            rf_dwell_s=ui.get("rf_sensor_dwell_s", 20), rtl_433_exe=ui.get("rtl_433_path", ""),
+        )
         self.waterfall_panel.radio_pills_when_multi = False
+        self.waterfall_panel.gps_state = self.gps_state
+        self._rf_device = False  # an RTL-SDR is plugged in: the RF band shows for it alone
         self.waterfall_view = WaterfallView()  # LoRa HAT's own RTL-SDR view
         self.rf_stack = QStackedWidget()
         self.rf_stack.addWidget(self.waterfall_panel)
@@ -422,7 +429,12 @@ class MainWindow(QMainWindow):
         self.message_panel.message_selected.connect(self._on_message_selected)
         self.message_panel.message_updated.connect(self._on_message_updated)
         self.inspector.closed.connect(self._close_inspector)
+        self.waterfall_panel.rf_mode_changed.connect(lambda m: self._save_ui_value("rf_mode", m))
+        self.waterfall_panel.rf_extras_changed.connect(lambda x: self._save_ui_value("rf_sensor_extras", x))
+        self.waterfall_panel.device_present_changed.connect(self._on_rf_device)
+        self.waterfall_panel.sensor_count_changed.connect(self.stats_strip.set_sensor_count)
         self.bridge.sniffer_radios.connect(self._on_sniffer_radios)
+        self.top_bar.radios.profile_chosen.connect(self._on_radio_profile_chosen)
         self.serial_drawer.toggled.connect(self._on_serial_toggled)
         self.waterfall_panel.graph_width_changed.connect(lambda w: self._remember("ui_rf_graph_width", w))
         self.waterfall_panel.gain_changed.connect(lambda g: self._remember("sdr_gain", g))
@@ -566,19 +578,48 @@ class MainWindow(QMainWindow):
         """Multi-radio (redesign 1d): a chip per radio in the top bar and
         Radio/Profile columns in the messages. Overridden by PocketMainWindow."""
         radios = getattr(self, "_radios", [])
+        self.top_bar.radios.profile_choices = [(p.key, p.name, p.freq) for p in all_profiles(self.config_data)]
         self.top_bar.radios.set_radios(radios, getattr(self, "_profile_families", {}))
         self.message_panel.set_radio_numbers({r["label"]: n for n, r in enumerate(radios, start=1)})
+
+    def _on_radio_profile_chosen(self, label, key):
+        """A radio chip's menu: pin that radio to one profile ("" = back to
+        its automatic share). Applies live through the sniffer worker."""
+        overrides = dict(self.config_data.get("sniffer_radio_overrides") or {})
+        if key:
+            # One radio per profile: whichever radio had it goes back to automatic.
+            overrides = {lbl: k for lbl, k in overrides.items() if k != key}
+            overrides[label] = key
+        else:
+            overrides.pop(label, None)
+        if overrides == (self.config_data.get("sniffer_radio_overrides") or {}):
+            return
+        name = next((p.name for p in all_profiles(self.config_data) if p.key == key), key)
+        self._log_line(f"-- {label}: listening on {name} --" if key else f"-- {label}: back to automatic --")
+        self._apply_settings({**self.config_data, "sniffer_radio_overrides": overrides})
 
     def _show_radio_rx(self, label, count):
         """Overridden by PocketMainWindow."""
         if count is not None:
             self.top_bar.radios.set_rx(label, count)
 
+    def _save_ui_value(self, key, value):
+        if self.config_data.get(key) != value:
+            self.config_data[key] = value
+            save_config(self.config_data)
+
+    def _on_rf_device(self, present):
+        """An RTL-SDR plugged in (or unplugged): the RF band shows for it
+        even with no LoRa device, for the waterfall or sensor decoding."""
+        self._rf_device = present
+        self._set_waterfall_visible(self.waterfall_panel._live)
+
     def _set_waterfall_visible(self, visible):
         """Show/hide the RF band. Overridden by PocketMainWindow, where the
         waterfall is a tab."""
         if self.config_data.get("mode") == "hat" and self.HAS_HAT_UI:
             visible = True  # the HAT's own waterfall lives there
+        visible = visible or self._rf_device
         if visible != self.rf_stack.isVisible():
             self.rf_stack.setVisible(visible)
             self._apply_splitter_sizes()

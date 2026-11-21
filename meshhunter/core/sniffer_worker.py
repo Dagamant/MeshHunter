@@ -334,7 +334,7 @@ class SnifferWorker:
         """Share the profiles out between the radios, giving every profile a
         global id (its waterfall column), grouped by radio."""
         with self._assign_lock:
-            shares = assign_profiles(self.config, len(self.links))
+            shares = assign_profiles(self.config, len(self.links), [link.label for link in self.links])
             profiles = []
             for link, share in zip(self.links, shares):
                 link.assigned = [(len(profiles) + i, p) for i, p in enumerate(share)]
@@ -453,6 +453,7 @@ class SnifferWorker:
                 "detail": link.detail,
                 "noise": link.noise,
                 "profiles": [p.name for _, p in link.assigned],
+                "pinned": (self.config.get("sniffer_radio_overrides") or {}).get(link.label),
             })
         self.ui_queue.put(("sniffer_radios", radios))
 
