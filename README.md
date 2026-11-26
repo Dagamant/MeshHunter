@@ -456,7 +456,23 @@ meshhunter/gui_qt/  PySide6 GUI (main window, rail widgets, theme)
   pocket_window.py  compact 640x480 layout, launched with --pocket
 meshhunter/tui/     terminal front ends: curses TUI (--tui) and --headless
 contrib/            example systemd unit for headless use
+cardputer-zero/     receive-only C++/LVGL port for the CardputerZero
+tests/              pytest suite (decoders, channels, profiles, rtl_433, GUI smoke)
 ```
+
+## Tests
+
+```bash
+pip install -r requirements.txt pytest
+pytest
+```
+
+The decoder, channel, profile and rtl_433 tests need only
+`requirements-cli.txt`; the GUI tests open each window offscreen and are
+skipped when PySide6 isn't installed. GitHub Actions runs them on every push
+and pull request (Linux, macOS, Windows), and also builds the CardputerZero
+`mesh_tests` and checks its decoder against the desktop one using a capture
+from `tests/make_golden.py`.
 
 ## License
 
