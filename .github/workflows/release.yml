@@ -9,6 +9,10 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Publishing a release in GitHub's web UI (which can create the tag too,
+  # e.g. from a phone or tablet) builds and attaches everything as well.
+  release:
+    types: [published]
   pull_request:
     paths:
       - .github/workflows/release.yml
@@ -22,6 +26,12 @@ on:
 
 permissions:
   contents: read
+
+# A UI-created release can fire both the tag push and the release event:
+# run them one after the other (the publish step is idempotent).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   version:
@@ -158,5 +168,16 @@ jobs:
         run: |
           python3 .github/scripts/release_info.py notes "$VERSION" > notes.md
           ls -l assets
-          gh release create "$GITHUB_REF_NAME" assets/* \
-            --title "MeshHunter $VERSION" --notes-file notes.md --verify-tag
+          tag="$GITHUB_REF_NAME"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # Created in the web UI: attach the builds, and fill in the
+            # title/notes only if they were left empty.
+            gh release upload "$tag" assets/* --clobber
+            body=$(gh release view "$tag" --json body --jq .body)
+            if [ -z "$body" ]; then
+              gh release edit "$tag" --title "MeshHunter $VERSION" --notes-file notes.md
+            fi
+          else
+            gh release create "$tag" assets/* \
+              --title "MeshHunter $VERSION" --notes-file notes.md --verify-tag
+          fi
