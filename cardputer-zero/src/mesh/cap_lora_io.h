@@ -73,4 +73,10 @@ private:
     std::string power_notes_;
 };
 
+// Just the Cap's 5 V rail, so its GPS works while the radio is a XIAO
+// sniffer. Returns true if this call switched the rail on (and so should
+// switch it off again with cap_power_rail_off()).
+bool cap_power_rail_on(const std::string& path = "/sys/class/leds/ext_5v_out/brightness");
+void cap_power_rail_off(const std::string& path = "/sys/class/leds/ext_5v_out/brightness");
+
 }  // namespace mesh

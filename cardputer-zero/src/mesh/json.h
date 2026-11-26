@@ -4,6 +4,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace mesh::json {
 
@@ -29,5 +30,8 @@ private:
 bool get_string(const std::string& line, const char* key, std::string& out);
 bool get_number(const std::string& line, const char* key, double& out);
 bool get_bool(const std::string& line, const char* key, bool& out);
+// An array of number arrays, e.g. "profiles":[[0,1,2],[1,3,4]]. Returns
+// false if the key is missing or isn't an array.
+bool get_number_rows(const std::string& line, const char* key, std::vector<std::vector<double>>& out);
 
 }  // namespace mesh::json

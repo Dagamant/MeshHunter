@@ -272,4 +272,23 @@ int CapLoraIo::dio1() { return -1; }
 
 #endif
 
+bool cap_power_rail_on(const std::string& path) {
+#if defined(__linux__)
+    std::string value;
+    if (!read_file(path, value) || value != "0") return false;
+    return write_file(path, "1");
+#else
+    (void)path;
+    return false;
+#endif
+}
+
+void cap_power_rail_off(const std::string& path) {
+#if defined(__linux__)
+    write_file(path, "0");
+#else
+    (void)path;
+#endif
+}
+
 }  // namespace mesh

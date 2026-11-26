@@ -1,4 +1,4 @@
-// The MeshHunter engine: owns the packet source (Cap LoRa-1262 or replay),
+// The MeshHunter engine: owns the packet source (Cap LoRa-1262, XIAO sniffer or replay),
 // the GPS reader and the node tables, decodes every packet on a worker
 // thread and records what it hears exactly like the desktop app's
 // SnifferWorker does:
@@ -73,6 +73,7 @@ struct EngineCounters {
     size_t heard_session = 0;
     size_t new_session = 0;
     std::string data_dir;
+    std::string storage_note;  // e.g. the one-time move from ~/.local/share/meshhunter
     std::string storage_error;
 };
 
@@ -101,6 +102,9 @@ public:
     void set_hop(bool hop);
     void set_fixed_profile(const std::string& key);
     void toggle_hop_profile(const std::string& key);
+    // source=both: move a profile Off -> Cap -> XIAO -> Off.
+    void cycle_radio_profile(const std::string& key);
+    bool multi_radio() const { return multi_ != nullptr; }
     void set_region(Region region);
     void set_dark_mode(bool dark);
 
@@ -127,6 +131,7 @@ private:
     Settings settings_;
     PersistFn persist_;
     std::unique_ptr<PacketSource> source_;
+    MultiSource* multi_ = nullptr;  // source_, when it's several radios (source=both)
     GpsReader gps_;
 
     std::vector<McChannel> mc_channels_;
@@ -150,6 +155,7 @@ private:
     bool stop_ = false;
     std::thread worker_;
     bool started_ = false;
+    bool cap_rail_switched_ = false;  // XIAO mode turned the Cap's 5 V rail on for its GPS
 };
 
 }  // namespace mesh

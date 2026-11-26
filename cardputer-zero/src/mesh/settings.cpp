@@ -106,9 +106,37 @@ std::vector<std::string> Settings::resolved_hop_profiles() const {
 
 std::string Settings::resolved_data_dir() const {
     if (!data_dir.empty()) return expand_home(data_dir);
+    return home_dir() + "/MeshHunter";
+}
+
+std::string legacy_data_dir() {
     const char* xdg = std::getenv("XDG_DATA_HOME");
     const std::string root = xdg && xdg[0] == '/' ? xdg : home_dir() + "/.local/share";
     return root + "/meshhunter";
+}
+
+std::string migrate_legacy_data_dir(const std::string& dir) {
+    const std::string old = legacy_data_dir();
+    struct stat st {};
+    if (::stat(dir.c_str(), &st) == 0) return "";  // already there
+    if (::stat(old.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) return "";
+    const auto slash = dir.rfind('/');
+    if (slash != std::string::npos && slash > 0) make_dirs(dir.substr(0, slash));
+    if (std::rename(old.c_str(), dir.c_str()) != 0) {
+        return "Couldn't move " + old + " to " + dir + ": " + std::strerror(errno);
+    }
+    return "Moved " + old + " to " + dir;
+}
+
+const char* source_name(SourceKind kind) {
+    switch (kind) {
+        case SourceKind::Xiao: return "xiao";
+        case SourceKind::Both: return "both";
+        case SourceKind::Replay: return "replay";
+        case SourceKind::None: return "none";
+        case SourceKind::CapLora: break;
+    }
+    return "cap";
 }
 
 std::vector<Profile> Settings::selected_profiles() const {
@@ -122,6 +150,41 @@ std::vector<Profile> Settings::selected_profiles() const {
         }
     } else if (const auto* p = find_profile(all, resolved_fixed_profile())) {
         out.push_back(*p);
+    }
+    return out;
+}
+
+std::vector<std::vector<Profile>> Settings::assigned_profiles(size_t radios) const {
+    std::vector<std::vector<Profile>> out(radios);
+    if (radios == 0) return out;
+    const auto selected = selected_profiles();
+    if (radios == 1 || hop) {
+        for (size_t i = 0; i < selected.size(); ++i) out[i % radios].push_back(selected[i]);
+        return out;
+    }
+    out[0] = selected;  // the fixed profile
+    const auto all = builtin_profiles(region);
+    const auto keys = resolved_hop_profiles();
+    size_t next = 1;
+    for (const auto& p : all) {
+        if (next >= radios) break;
+        if (std::find(keys.begin(), keys.end(), p.key) == keys.end()) continue;
+        if (!selected.empty() && p.key == selected[0].key) continue;
+        out[next++].push_back(p);
+    }
+    return out;
+}
+
+std::vector<Profile> Settings::radio_profiles(size_t radio) const {
+    if (cap_profiles.empty() && xiao_profiles.empty()) {
+        auto shares = assigned_profiles(2);
+        return radio < shares.size() ? shares[radio] : std::vector<Profile>{};
+    }
+    const auto& keys = radio == 0 ? cap_profiles : xiao_profiles;
+    std::vector<Profile> out;
+    if (radio > 1) return out;
+    for (const auto& p : builtin_profiles(region)) {
+        if (std::find(keys.begin(), keys.end(), p.key) != keys.end()) out.push_back(p);
     }
     return out;
 }
@@ -151,7 +214,11 @@ bool load_settings(const std::string& path, Settings& s, std::string& error) {
         } else if (section == "radio") {
             if (key == "source") {
                 const auto v = lower(value);
-                s.source = v == "replay" ? SourceKind::Replay : v == "none" ? SourceKind::None : SourceKind::CapLora;
+                s.source = v == "xiao"                                     ? SourceKind::Xiao
+                           : v == "both" || v == "cap+xiao" || v == "cap,xiao" ? SourceKind::Both
+                           : v == "replay" ? SourceKind::Replay
+                           : v == "none"   ? SourceKind::None
+                                           : SourceKind::CapLora;
             } else if (key == "region") {
                 parse_region(value, s.region);
             } else if (key == "mode") {
@@ -160,6 +227,10 @@ bool load_settings(const std::string& path, Settings& s, std::string& error) {
                 s.fixed_profile = value;
             } else if (key == "hop_profiles") {
                 s.hop_profiles = split_list(value, ',');
+            } else if (key == "cap_profiles") {
+                s.cap_profiles = split_list(value, ',');
+            } else if (key == "xiao_profiles") {
+                s.xiao_profiles = split_list(value, ',');
             } else if (key == "dwell_ms") {
                 s.timing.dwell_ms = parse_int(value, s.timing.dwell_ms);
             } else if (key == "linger_ms") {
@@ -170,6 +241,8 @@ bool load_settings(const std::string& path, Settings& s, std::string& error) {
                 s.timing.linger_max_ms = parse_int(value, s.timing.linger_max_ms);
             } else if (key == "spi_device") {
                 s.spi_device = value;
+            } else if (key == "serial_device") {
+                s.serial_device = value.empty() ? "auto" : value;
             } else if (key == "replay_file") {
                 s.replay_file = expand_home(value);
             } else if (key == "replay_interval_ms") {
@@ -198,19 +271,24 @@ bool save_settings(const std::string& path, const Settings& s, std::string& erro
     out << "[application]\n";
     out << "dark_mode=" << (s.dark_mode ? "yes" : "no") << "\n\n";
     out << "[radio]\n";
-    out << "# cap = Cap LoRa-1262, replay = play back replay_file, none = no radio\n";
-    out << "source=" << (s.source == SourceKind::Replay ? "replay" : s.source == SourceKind::None ? "none" : "cap")
-        << "\n";
+    out << "# cap = Cap LoRa-1262, xiao = XIAO sniffer over USB, both = Cap + XIAO,\n";
+    out << "# replay = play back replay_file, none = no radio\n";
+    out << "source=" << source_name(s.source) << "\n";
     out << "# US or EU868\n";
     out << "region=" << region_name(s.region) << "\n";
     out << "mode=" << (s.hop ? "hop" : "fixed") << "\n";
     out << "fixed_profile=" << s.fixed_profile << "\n";
     out << "hop_profiles=" << join(s.hop_profiles, ",") << "\n";
+    out << "# source=both: profiles per radio (empty = share the hop list out)\n";
+    out << "cap_profiles=" << join(s.cap_profiles, ",") << "\n";
+    out << "xiao_profiles=" << join(s.xiao_profiles, ",") << "\n";
     out << "dwell_ms=" << s.timing.dwell_ms << "\n";
     out << "linger_ms=" << s.timing.linger_ms << "\n";
     out << "partial_linger_ms=" << s.timing.partial_linger_ms << "\n";
     out << "linger_max_ms=" << s.timing.linger_max_ms << "\n";
     out << "spi_device=" << s.spi_device << "\n";
+    out << "# XIAO sniffer port, or auto\n";
+    out << "serial_device=" << s.serial_device << "\n";
     out << "replay_file=" << s.replay_file << "\n";
     out << "replay_interval_ms=" << s.replay_interval_ms << "\n\n";
     out << "[gps]\n";
@@ -218,7 +296,7 @@ bool save_settings(const std::string& path, const Settings& s, std::string& erro
     out << "device=" << s.gps_device << "\n";
     out << "baud=" << s.gps_baud << "\n\n";
     out << "[storage]\n";
-    out << "# empty = ~/.local/share/meshhunter (same place as the desktop app)\n";
+    out << "# empty = ~/MeshHunter\n";
     out << "data_dir=" << s.data_dir << "\n";
     out << "raw_log=" << (s.raw_log ? "yes" : "no") << "\n\n";
     out << "[channels]\n";

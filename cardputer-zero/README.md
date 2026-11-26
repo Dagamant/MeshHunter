@@ -1,7 +1,9 @@
 # MeshHunter for CardputerZero
 
 A receive-only port of MeshHunter for the CardputerZero with the
-**Cap LoRa-1262** hat (SX1262 radio + ATGM336H GPS).
+**Cap LoRa-1262** hat (SX1262 radio + ATGM336H GPS), or with a **XIAO
+nRF52840 + Wio-SX1262** running the MeshHunter sniffer firmware plugged into
+USB.
 
 It listens on the MeshCore and Meshtastic LoRa presets, verifies MeshCore
 adverts (Ed25519), decodes Public / default-channel traffic, and logs every
@@ -20,7 +22,7 @@ Built from the [CardputerZero app template](https://github.com/CardputerZero/tem
 | --- | --- | --- |
 | `4` | Nodes | Nodes heard this session. UP/DOWN select, ENTER shows details |
 | `5` | Live | Packet feed: `C` MeshCore, `T` Meshtastic, `!` bad CRC, `?` other |
-| `6` | Radio | Profiles, per-profile counts, RSSI. `M` hop/fixed, `R` US/EU868, ENTER toggles a profile |
+| `6` | Radio | Profiles, per-profile counts, RSSI. `M` hop/fixed, `R` US/EU868, ENTER toggles a profile (with both radios: Cap / XIAO / off) |
 | `7` | GPS | Fix, satellites, UTC, storage counters |
 | `8` | | Light/dark theme |
 
@@ -45,9 +47,48 @@ The app user needs to be in the `spi`, `gpio`, `i2c` and `dialout` groups
 Only one program can drive the radio at a time. Close MeshTerm, Cap LoRa-1262
 and Cap LoRa-1262 GPS before starting MeshHunter.
 
+### XIAO sniffer instead of the Cap's radio
+
+Flash the XIAO with `meshhunter-sniffer-xiao-nrf52840-sx1262-<version>.uf2`
+from the [releases](https://github.com/Dagamant/MeshHunter/releases) (see
+[`firmware/sniffer`](../firmware/sniffer/README.md)), plug it into the
+CardputerZero's USB port and set this in
+`~/.config/meshhunter/meshhunter.conf`:
+
+```ini
+[radio]
+source=xiao
+# auto = the first USB serial port whose product is "MeshHunter Sniffer"
+serial_device=auto
+```
+
+### Cap and XIAO together
+
+`source=both` runs the Cap's radio and the XIAO at the same time, each on its
+own presets. On the Radio page ENTER moves the selected preset between
+`[C]` (Cap), `[X]` (XIAO) and `[ ]` (off). A radio with one preset stays
+on it; with several it hops between them. Until you pick, the hop list is
+shared out between the two. The picks are saved as `cap_profiles` and
+`xiao_profiles`, and changing region resets them. Packets in
+`sniffer_packets.jsonl` say which radio heard them (`"radio":"cap"` or
+`"xiao"`). If one radio fails, the Radio page shows its error while the other
+keeps listening.
+
+### XIAO notes
+
+The XIAO runs the hop/lock/linger loop itself and sends packets over USB
+serial; profiles, region and hop/fixed on the Radio page work the same as
+with the Cap. If the Cap is still attached its GPS is used, and MeshHunter
+switches the Cap's 5 V rail on for it (and off again on exit) if it was off.
+Unplugging the XIAO shows an error on the Radio page and MeshHunter
+reconnects when it comes back. The desktop simulator can use a XIAO the same
+way.
+
 ## Data
 
-Everything is written to `~/.local/share/meshhunter/`:
+Everything is written to `~/MeshHunter/` (set `data_dir` under `[storage]`
+to change it). Older versions wrote to `~/.local/share/meshhunter/`; if
+`~/MeshHunter` doesn't exist yet, that folder is moved there on first start.
 
 - `repeaters.csv`, `chat_nodes.csv`, `room_nodes.csv`, `sensor_nodes.csv`:
   MeshCore nodes that advertised a location, in the desktop `NODE_CSV_FIELDS`
@@ -97,13 +138,13 @@ app or from the device instead:
 ```bash
 cmake --preset linux-x86-64
 cmake --build build/linux-x86-64 --config Release
-MESHHUNTER_REPLAY=~/.local/share/meshhunter/sniffer_packets.jsonl \
+MESHHUNTER_REPLAY=~/MeshHunter/sniffer_packets.jsonl \
     ./build/linux-x86-64/Release/meshhunter
 ```
 
 Replay mode appends to the same data directory, so point `HOME` or
-`XDG_DATA_HOME` somewhere else if you don't want replayed nodes mixed into
-your real logs.
+`data_dir` somewhere else if you don't want replayed nodes mixed into your
+real logs.
 
 ### Tools
 
@@ -123,6 +164,7 @@ src/mesh/        radio, decoding, GPS, CSV storage (no LVGL)
   sx1262.*         RX-only SX1262 driver
   cap_lora_io.*    Cap LoRa-1262 SPI/GPIO/expander/5 V glue
   sniffer.*        hop/lock/linger receive loop, replay source
+  xiao_source.cpp  XIAO sniffer firmware over USB serial
   meshcore.* meshtastic.* crypto.*  packet decoding
   engine.*         ties it together; owns the CSVs and the packet log
 src/viewmodel/   key handling, page state

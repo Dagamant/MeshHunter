@@ -4,6 +4,7 @@
 #include "engine.h"
 #include "theme.h"
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <ctime>
@@ -271,11 +272,18 @@ void RadioScreen::refresh() {
     const auto status = engine->radio();
     const auto settings = engine->settings();
     const auto profiles = engine->region_profiles();
+    const bool multi = engine->multi_radio();
     const auto selected = settings.selected_profiles();
+    std::vector<std::string> on_cap, on_xiao;
+    if (multi) {
+        for (const auto& p : settings.radio_profiles(0)) on_cap.push_back(p.key);
+        for (const auto& p : settings.radio_profiles(1)) on_xiao.push_back(p.key);
+    }
 
     lv_label_set_text(header_, (status.source + "  " + radio_state_text(status.state)).c_str());
-    lv_label_set_text(mode_,
-                      fmt("%s %s", settings.hop ? "HOP" : "FIXED", mesh::region_name(settings.region)).c_str());
+    lv_label_set_text(mode_, fmt("%s %s", multi ? "CAP+XIAO" : settings.hop ? "HOP" : "FIXED",
+                                 mesh::region_name(settings.region))
+                                 .c_str());
     if (status.state == mesh::RadioState::Error || status.state == mesh::RadioState::Starting) {
         lv_label_set_text(status_, status.message.c_str());
         lv_obj_set_style_text_color(status_, status.state == mesh::RadioState::Error ? colors.error : colors.warning,
@@ -305,11 +313,20 @@ void RadioScreen::refresh() {
         rows_.set_row_visible(r, true);
         const auto& p = profiles[static_cast<size_t>(idx)];
         bool in_use = false;
-        for (const auto& s : selected) in_use = in_use || s.key == p.key;
-        rows_.set_text(r, 0, settings.hop ? (in_use ? "[x]" : "[ ]") : (in_use ? "(o)" : "( )"));
+        if (multi) {
+            const bool cap = std::find(on_cap.begin(), on_cap.end(), p.key) != on_cap.end();
+            const bool xiao = std::find(on_xiao.begin(), on_xiao.end(), p.key) != on_xiao.end();
+            in_use = cap || xiao;
+            rows_.set_text(r, 0, cap ? "[C]" : xiao ? "[X]" : "[ ]");
+        } else {
+            for (const auto& s : selected) in_use = in_use || s.key == p.key;
+            rows_.set_text(r, 0, settings.hop ? (in_use ? "[x]" : "[ ]") : (in_use ? "(o)" : "( )"));
+        }
         rows_.set_color(r, 0, in_use ? colors.primary : colors.text_disabled);
         rows_.set_text(r, 1, p.name);
-        if (p.key == current_key) rows_.set_color(r, 1, colors.primary);
+        const bool on_air = p.key == current_key || std::find(status.current_keys.begin(), status.current_keys.end(),
+                                                              p.key) != status.current_keys.end();
+        if (on_air) rows_.set_color(r, 1, colors.primary);
         else if (!in_use) rows_.set_color(r, 1, colors.text_disabled);
         const mesh::ProfileStats* st = nullptr;
         for (const auto& s : status.stats) {

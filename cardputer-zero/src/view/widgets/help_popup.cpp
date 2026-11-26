@@ -38,15 +38,15 @@ constexpr std::array<HelpRow, 4> kLiveRows = {{
 
 constexpr std::array<HelpRow, 5> kRadioRows = {{
     {"UP / DOWN", "Select profile"},
-    {"ENTER", "Hop: add/remove  Fixed: listen"},
-    {"M", "Toggle hop / fixed"},
+    {"ENTER", "Add/remove; Cap+XIAO: C/X/off"},
+    {"M", "Hop / fixed (one radio)"},
     {"R", "Region US / EU868"},
     {"HOLD ESC", "Exit"},
 }};
 
 constexpr std::array<HelpRow, 3> kGpsRows = {{
     {"GPS", "Cap GPS on /dev/ttyS0, 115200"},
-    {"LOGS", "~/.local/share/meshhunter"},
+    {"LOGS", "~/MeshHunter"},
     {"HOLD ESC", "Exit"},
 }};
 

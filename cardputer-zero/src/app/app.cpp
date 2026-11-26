@@ -288,6 +288,7 @@ int Application::run() {
     engine.start();
     view_model.attach_engine(&engine);
     LOG_INFO("data dir: {}", engine.counters().data_dir);
+    if (const auto note = engine.counters().storage_note; !note.empty()) LOG_INFO("{}", note);
 
     ScreenManager screen_manager(view_model, assets);
     screen_manager.start();
