@@ -105,12 +105,32 @@ jobs:
           key: pio-${{ hashFiles('firmware/sniffer/platformio.ini') }}
       - run: pip install platformio
       - run: pio run
-      - name: Collect
+      - name: Collect (.hex, DFU .zip, and a .uf2 for drag-and-drop)
         run: |
+          # PlatformIO's nRF52 build makes .hex and a DFU .zip but no .uf2;
+          # convert the .hex with the uf2conv.py the Adafruit nRF52 core
+          # ships. 0xADA52840 is the nRF52840 UF2 family the XIAO's
+          # bootloader accepts; the address (0x27000, after S140 7.3.0)
+          # comes from the .hex itself.
+          uf2conv=$(find ~/.platformio/packages -path '*uf2conv/uf2conv.py' | head -n 1)
+          test -n "$uf2conv" || { echo "uf2conv.py not found in the Adafruit nRF52 core"; exit 1; }
+          build=.pio/build/xiao_sx1262
+          python "$uf2conv" -c -f 0xADA52840 -o "$build/firmware.uf2" "$build/firmware.hex"
+          # Sanity check: UF2 magic, nRF52840 family, first block at the app start.
+          python - "$build/firmware.uf2" <<'PY'
+          import struct, sys
+          data = open(sys.argv[1], "rb").read()
+          assert data and len(data) % 512 == 0, "not a UF2 file"
+          m0, m1, flags, addr, size, block, blocks, family = struct.unpack_from("<8I", data)
+          assert (m0, m1) == (0x0A324655, 0x9E5D5157), "bad UF2 magic"
+          assert flags & 0x2000 and family == 0xADA52840, f"family {family:#x}"
+          assert addr == 0x27000, f"first block at {addr:#x}, expected 0x27000"
+          print(f"UF2 ok: {blocks} blocks from {addr:#x}")
+          PY
           mkdir -p out
-          version="${{ needs.version.outputs.version }}"
-          for ext in uf2 hex; do
-            cp ".pio/build/xiao_sx1262/firmware.$ext" "out/meshhunter-sniffer-xiao-nrf52840-sx1262-$version.$ext"
+          name="meshhunter-sniffer-xiao-nrf52840-sx1262-${{ needs.version.outputs.version }}"
+          for ext in uf2 hex zip; do
+            cp "$build/firmware.$ext" "out/$name.$ext"
           done
       - uses: actions/upload-artifact@v4
         with:

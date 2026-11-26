@@ -56,8 +56,8 @@ First tagged release. Everything below is what MeshHunter could do at this point
   an offscreen GUI smoke test, the CardputerZero `mesh_tests`, and a check that
   the CardputerZero decoder agrees with the desktop decoder.
 - Release workflow: pushing a `v*` tag builds the Python wheel and sdist, the
-  CardputerZero `.deb` and the sniffer firmware, and attaches them to the
-  GitHub release.
+  CardputerZero `.deb` and the sniffer firmware (`.uf2`, `.hex`, DFU `.zip`),
+  and attaches them to the GitHub release.
 
 [Unreleased]: https://github.com/Dagamant/MeshHunter/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/Dagamant/MeshHunter/releases/tag/v0.1.0
