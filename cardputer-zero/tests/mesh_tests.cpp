@@ -341,10 +341,156 @@ void test_settings_storage() {
     CHECK(mesh::load_settings(conf, y, error));
     CHECK(y.source == mesh::SourceKind::Xiao);
     CHECK(y.serial_device == "/dev/ttyACM3");
+    x.source = mesh::SourceKind::Both;
+    CHECK(mesh::save_settings(conf, x, error));
+    CHECK(mesh::load_settings(conf, y, error));
+    CHECK(y.source == mesh::SourceKind::Both);
 
     if (old_home) setenv("HOME", saved_home.c_str(), 1);
     std::error_code ec;
     std::filesystem::remove_all(base, ec);
+}
+
+void test_assigned_profiles() {
+    mesh::Settings s;  // US, hop, default hop list: meshcore_us, mt_longfast, mt_mediumfast
+    auto shares = s.assigned_profiles(2);
+    CHECK(shares.size() == 2);
+    CHECK(shares[0].size() == 2 && shares[1].size() == 1);
+    if (shares[0].size() == 2 && shares[1].size() == 1) {
+        CHECK(shares[0][0].key == "meshcore_us" && shares[0][1].key == "mt_mediumfast");
+        CHECK(shares[1][0].key == "mt_longfast");
+    }
+    s.hop = false;  // fixed: Cap on the fixed profile, XIAO on the next hop-list one
+    shares = s.assigned_profiles(2);
+    CHECK(shares.size() == 2 && shares[0].size() == 1 && shares[1].size() == 1);
+    if (shares.size() == 2 && shares[0].size() == 1 && shares[1].size() == 1) {
+        CHECK(shares[0][0].key == "meshcore_us");
+        CHECK(shares[1][0].key == "mt_longfast");
+    }
+    CHECK(s.assigned_profiles(1).size() == 1 && s.assigned_profiles(1)[0].size() == 1);
+}
+
+void test_radio_profiles() {
+    mesh::Settings s;
+    s.source = mesh::SourceKind::None;
+    s.gps_enabled = false;
+    s.raw_log = false;
+    char dir_template[] = "/tmp/mesh_radio_XXXXXX";
+    const char* dir = mkdtemp(dir_template);
+    CHECK(dir != nullptr);
+    if (!dir) return;
+    s.data_dir = dir;
+    mesh::Engine engine(s, nullptr);
+    const auto keys = [&](size_t radio) {
+        std::vector<std::string> out;
+        for (const auto& p : engine.settings().radio_profiles(radio)) out.push_back(p.key);
+        return out;
+    };
+    using V = std::vector<std::string>;
+    // Default: the hop list shared out.
+    CHECK(keys(0) == (V{"meshcore_us", "mt_mediumfast"}));
+    CHECK(keys(1) == (V{"mt_longfast"}));
+    // Off -> Cap -> XIAO -> Off, without disturbing the others.
+    engine.cycle_radio_profile("mt_mediumfast");  // Cap -> XIAO
+    CHECK(keys(0) == (V{"meshcore_us"}));
+    CHECK(keys(1) == (V{"mt_longfast", "mt_mediumfast"}));
+    engine.cycle_radio_profile("mt_longfast");  // XIAO -> off
+    CHECK(keys(1) == (V{"mt_mediumfast"}));
+    engine.cycle_radio_profile("mt_longslow");  // off -> Cap
+    CHECK(keys(0) == (V{"meshcore_us", "mt_longslow"}) || keys(0) == (V{"mt_longslow", "meshcore_us"}));
+    CHECK(engine.settings().cap_profiles.size() == 2);
+    // Region change resets to the automatic split.
+    engine.set_region(mesh::Region::EU868);
+    CHECK(engine.settings().cap_profiles.empty() && engine.settings().xiao_profiles.empty());
+    CHECK(!keys(0).empty() && !keys(1).empty());
+
+    // The per-radio lists survive a save/load.
+    mesh::Settings x;
+    x.cap_profiles = {"meshcore_us"};
+    x.xiao_profiles = {"mt_longfast", "mt_shortfast"};
+    std::string error;
+    const std::string conf = std::string(dir) + "/meshhunter.conf";
+    CHECK(mesh::save_settings(conf, x, error));
+    mesh::Settings y;
+    CHECK(mesh::load_settings(conf, y, error));
+    CHECK(y.cap_profiles == x.cap_profiles && y.xiao_profiles == x.xiao_profiles);
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+class StubSource final : public mesh::PacketSource {
+public:
+    StubSource(std::string name, mesh::RadioState state, std::string message = "")
+        : name_(std::move(name)), state_(state), message_(std::move(message)) {}
+    void start(PacketCallback cb) override { cb_ = std::move(cb); }
+    void stop() override {}
+    void set_profiles(std::vector<mesh::Profile> profiles, mesh::SnifferTiming) override {
+        profiles_ = std::move(profiles);
+    }
+    mesh::SnifferStatus status() const override {
+        mesh::SnifferStatus s;
+        s.source = name_;
+        s.state = state_;
+        s.message = message_;
+        s.hops = 5;
+        for (const auto& p : profiles_) s.stats.push_back(mesh::ProfileStats{p.key, 2});
+        s.current = profiles_.empty() ? -1 : static_cast<int>(profiles_.size()) - 1;
+        return s;
+    }
+    void emit() {
+        mesh::RxPacket pkt;
+        pkt.radio = name_;
+        if (cb_) cb_(std::move(pkt));
+    }
+    std::vector<mesh::Profile> profiles_;
+
+private:
+    std::string name_;
+    mesh::RadioState state_;
+    std::string message_;
+    PacketCallback cb_;
+};
+
+void test_multi_source() {
+    auto cap = std::make_unique<StubSource>("Cap", mesh::RadioState::Listening);
+    auto xiao = std::make_unique<StubSource>("XIAO", mesh::RadioState::Listening);
+    StubSource* cap_raw = cap.get();
+    StubSource* xiao_raw = xiao.get();
+    std::vector<std::unique_ptr<mesh::PacketSource>> radios;
+    radios.push_back(std::move(cap));
+    radios.push_back(std::move(xiao));
+    mesh::MultiSource multi(std::move(radios));
+    std::vector<std::string> heard;
+    multi.start([&](mesh::RxPacket&& pkt) { heard.push_back(pkt.radio); });
+
+    mesh::Settings settings;
+    multi.set_assignment(settings.assigned_profiles(2), mesh::SnifferTiming{});
+    CHECK(cap_raw->profiles_.size() == 2 && xiao_raw->profiles_.size() == 1);
+
+    auto st = multi.status();
+    CHECK(st.source == "Cap + XIAO");
+    CHECK(st.state == mesh::RadioState::Listening);
+    CHECK(st.stats.size() == 3);
+    CHECK(st.hops == 10);
+    CHECK(st.current == 1);  // the Cap's current profile, in the merged list
+    CHECK(st.current_keys.size() == 2);
+    if (st.current_keys.size() == 2) {
+        CHECK(st.current_keys[0] == "mt_mediumfast" && st.current_keys[1] == "mt_longfast");
+    }
+
+    cap_raw->emit();
+    xiao_raw->emit();
+    CHECK(heard.size() == 2 && heard[0] == "Cap" && heard[1] == "XIAO");
+    multi.stop();
+
+    // One radio failing shows as an error naming it.
+    std::vector<std::unique_ptr<mesh::PacketSource>> radios2;
+    radios2.push_back(std::make_unique<StubSource>("Cap", mesh::RadioState::Listening));
+    radios2.push_back(std::make_unique<StubSource>("XIAO", mesh::RadioState::Error, "unplugged"));
+    mesh::MultiSource multi2(std::move(radios2));
+    st = multi2.status();
+    CHECK(st.state == mesh::RadioState::Error);
+    CHECK(st.message == "XIAO: unplugged");
 }
 
 #if defined(__linux__)
@@ -470,6 +616,9 @@ int main(int argc, char** argv) {
     test_engine_records_advert();
     test_json_rows();
     test_settings_storage();
+    test_assigned_profiles();
+    test_multi_source();
+    test_radio_profiles();
 #if defined(__linux__)
     test_xiao_source();
 #endif

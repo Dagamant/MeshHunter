@@ -113,7 +113,9 @@ void BaseViewModel::activate() {
         const int c = cursor(page);
         if (c < 0 || c >= static_cast<int>(profiles.size())) return;
         const auto& key = profiles[static_cast<size_t>(c)].key;
-        if (engine_->settings().hop) {
+        if (engine_->multi_radio()) {
+            engine_->cycle_radio_profile(key);
+        } else if (engine_->settings().hop) {
             engine_->toggle_hop_profile(key);
         } else {
             engine_->set_fixed_profile(key);
@@ -150,7 +152,8 @@ bool BaseViewModel::handle_key(uint32_t key) {
     }
     if (page == model::AppPage::Radio && engine_) {
         if (key == 'm') {
-            engine_->set_hop(!engine_->settings().hop);
+            // With both radios, each one's profile list sets hop/fixed.
+            if (!engine_->multi_radio()) engine_->set_hop(!engine_->settings().hop);
             return true;
         }
         if (key == 'r') {

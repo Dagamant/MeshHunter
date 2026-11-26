@@ -187,6 +187,7 @@ private:
         if (irq & kIrqRxDone) {
             RxPacket pkt;
             pkt.profile = p;
+            pkt.radio = "cap";
             radio_->read_packet(pkt.data, pkt.rssi, pkt.snr);
             pkt.crc_ok = !(irq & kIrqCrcErr);
             if (pkt.crc_ok) {
@@ -403,6 +404,7 @@ private:
             pkt.rssi = static_cast<float>(rssi);
             pkt.snr = static_cast<float>(snr);
             pkt.crc_ok = crc;
+            pkt.radio = "replay";
             int idx = -1;
             {
                 std::lock_guard<std::mutex> lock(mutex_);

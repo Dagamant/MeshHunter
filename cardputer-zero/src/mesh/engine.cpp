@@ -179,6 +179,16 @@ void Engine::start() {
             CapLoraConfig cfg;
             cfg.spi_device = settings_.spi_device;
             source_ = make_cap_lora_source(cfg);
+        } else if (settings_.source == SourceKind::Both) {
+            // Cap first: in fixed mode it takes the fixed profile.
+            CapLoraConfig cfg;
+            cfg.spi_device = settings_.spi_device;
+            std::vector<std::unique_ptr<PacketSource>> radios;
+            radios.push_back(make_cap_lora_source(cfg));
+            radios.push_back(make_xiao_source(settings_.serial_device));
+            auto multi = std::make_unique<MultiSource>(std::move(radios));
+            multi_ = multi.get();
+            source_ = std::move(multi);
         } else if (settings_.source == SourceKind::Xiao) {
             source_ = make_xiao_source(settings_.serial_device);
             // The Cap's GPS still works with a XIAO doing the listening,
@@ -294,7 +304,7 @@ void Engine::write_raw(const RxPacket& pkt, const std::string& decoded_json) {
     if (!raw_log_) return;
     json::ObjectWriter w;
     w.str("t", local_iso_timestamp_ms())
-        .str("radio", source_name(settings_.source))
+        .str("radio", pkt.radio.empty() ? source_name(settings_.source) : pkt.radio)
         .str("profile", pkt.profile.key)
         .num("freq", pkt.profile.freq)
         .num("bw", pkt.profile.bw)
@@ -545,7 +555,16 @@ void Engine::apply_radio_settings() {
         profiles = settings_.selected_profiles();
         timing = settings_.timing;
     }
-    if (source_) source_->set_profiles(std::move(profiles), timing);
+    if (multi_) {
+        std::vector<std::vector<Profile>> shares;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (size_t i = 0; i < multi_->radio_count(); ++i) shares.push_back(settings_.radio_profiles(i));
+        }
+        multi_->set_assignment(shares, timing);
+    } else if (source_) {
+        source_->set_profiles(std::move(profiles), timing);
+    }
     ++revision_;
 }
 
@@ -593,6 +612,31 @@ void Engine::toggle_hop_profile(const std::string& key) {
     persist_settings();
 }
 
+void Engine::cycle_radio_profile(const std::string& key) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // Start from what the radios are on now (the automatic split the
+        // first time), so one change doesn't reshuffle the rest.
+        std::vector<std::string> cap, xiao;
+        for (const auto& p : settings_.radio_profiles(0)) cap.push_back(p.key);
+        for (const auto& p : settings_.radio_profiles(1)) xiao.push_back(p.key);
+        const auto in = [&](std::vector<std::string>& v) { return std::find(v.begin(), v.end(), key) != v.end(); };
+        const auto drop = [&](std::vector<std::string>& v) { v.erase(std::remove(v.begin(), v.end(), key), v.end()); };
+        if (in(cap)) {
+            drop(cap);
+            xiao.push_back(key);
+        } else if (in(xiao)) {
+            drop(xiao);
+        } else {
+            cap.push_back(key);
+        }
+        settings_.cap_profiles = cap;
+        settings_.xiao_profiles = xiao;
+    }
+    apply_radio_settings();
+    persist_settings();
+}
+
 void Engine::set_region(Region region) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -600,6 +644,8 @@ void Engine::set_region(Region region) {
         settings_.region = region;
         settings_.fixed_profile.clear();
         settings_.hop_profiles.clear();
+        settings_.cap_profiles.clear();
+        settings_.xiao_profiles.clear();
     }
     apply_radio_settings();
     persist_settings();

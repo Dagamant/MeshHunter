@@ -13,7 +13,8 @@
 
 namespace mesh {
 
-enum class SourceKind { CapLora, Xiao, Replay, None };
+// Both = the Cap and a XIAO together, sharing the profiles out.
+enum class SourceKind { CapLora, Xiao, Both, Replay, None };
 
 struct Settings {
     // [application]
@@ -25,6 +26,11 @@ struct Settings {
     bool hop = true;
     std::string fixed_profile;              // empty = region default
     std::vector<std::string> hop_profiles;  // empty = region default
+    // source=both: the profiles each radio listens on (a radio with one
+    // stays on it, with several it hops). Both empty = share the hop list
+    // out between them (see assigned_profiles()).
+    std::vector<std::string> cap_profiles;
+    std::vector<std::string> xiao_profiles;
     SnifferTiming timing;
     std::string spi_device = "/dev/spidev0.1";
     // XIAO sniffer serial port; "auto" = the first port whose USB product
@@ -53,6 +59,14 @@ struct Settings {
     std::string resolved_data_dir() const;
     // The profiles the radio should listen on, in hop order.
     std::vector<Profile> selected_profiles() const;
+    // selected_profiles() shared between `radios` radios, as the desktop
+    // app's _auto_assign does: hop mode deals the hop list out round-robin;
+    // fixed mode puts the fixed profile on the first radio and the next
+    // hop-list profiles on the others, one each.
+    std::vector<std::vector<Profile>> assigned_profiles(size_t radios) const;
+    // source=both: what radio 0 (Cap) and radio 1 (XIAO) listen on, from
+    // cap_profiles / xiao_profiles, or assigned_profiles(2) if both are empty.
+    std::vector<Profile> radio_profiles(size_t radio) const;
 };
 
 bool load_settings(const std::string& path, Settings& settings, std::string& error);

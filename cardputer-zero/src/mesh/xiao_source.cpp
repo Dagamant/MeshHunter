@@ -295,6 +295,7 @@ private:
         pkt.rssi = static_cast<float>(rssi);
         pkt.snr = static_cast<float>(snr);
         pkt.crc_ok = crc != 0;
+        pkt.radio = "xiao";
         const int idx = static_cast<int>(id);
         if (idx >= 0 && idx < static_cast<int>(profiles_.size())) {
             pkt.profile = profiles_[static_cast<size_t>(idx)];

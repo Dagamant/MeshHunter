@@ -22,7 +22,7 @@ Built from the [CardputerZero app template](https://github.com/CardputerZero/tem
 | --- | --- | --- |
 | `4` | Nodes | Nodes heard this session. UP/DOWN select, ENTER shows details |
 | `5` | Live | Packet feed: `C` MeshCore, `T` Meshtastic, `!` bad CRC, `?` other |
-| `6` | Radio | Profiles, per-profile counts, RSSI. `M` hop/fixed, `R` US/EU868, ENTER toggles a profile |
+| `6` | Radio | Profiles, per-profile counts, RSSI. `M` hop/fixed, `R` US/EU868, ENTER toggles a profile (with both radios: Cap / XIAO / off) |
 | `7` | GPS | Fix, satellites, UTC, storage counters |
 | `8` | | Light/dark theme |
 
@@ -61,6 +61,20 @@ source=xiao
 # auto = the first USB serial port whose product is "MeshHunter Sniffer"
 serial_device=auto
 ```
+
+### Cap and XIAO together
+
+`source=both` runs the Cap's radio and the XIAO at the same time, each on its
+own presets. On the Radio page ENTER moves the selected preset between
+`[C]` (Cap), `[X]` (XIAO) and `[ ]` (off). A radio with one preset stays
+on it; with several it hops between them. Until you pick, the hop list is
+shared out between the two. The picks are saved as `cap_profiles` and
+`xiao_profiles`, and changing region resets them. Packets in
+`sniffer_packets.jsonl` say which radio heard them (`"radio":"cap"` or
+`"xiao"`). If one radio fails, the Radio page shows its error while the other
+keeps listening.
+
+### XIAO notes
 
 The XIAO runs the hop/lock/linger loop itself and sends packets over USB
 serial; profiles, region and hop/fixed on the Radio page work the same as

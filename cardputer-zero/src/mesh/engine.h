@@ -102,6 +102,9 @@ public:
     void set_hop(bool hop);
     void set_fixed_profile(const std::string& key);
     void toggle_hop_profile(const std::string& key);
+    // source=both: move a profile Off -> Cap -> XIAO -> Off.
+    void cycle_radio_profile(const std::string& key);
+    bool multi_radio() const { return multi_ != nullptr; }
     void set_region(Region region);
     void set_dark_mode(bool dark);
 
@@ -128,6 +131,7 @@ private:
     Settings settings_;
     PersistFn persist_;
     std::unique_ptr<PacketSource> source_;
+    MultiSource* multi_ = nullptr;  // source_, when it's several radios (source=both)
     GpsReader gps_;
 
     std::vector<McChannel> mc_channels_;
