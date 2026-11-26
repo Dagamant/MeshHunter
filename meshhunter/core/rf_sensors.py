@@ -65,7 +65,7 @@ CATEGORIES = (
                             r"Door|Window|Motion|Contact|Smoke|Alarm|Visonic|SimpliSafe", re.I)),
     ("Doorbell", re.compile(r"ActivLink|Doorbell|Chime", re.I)),
     ("Remote", re.compile(r"Remote|Keyfob|KeeLoq|HCS\d|Garage|Gate|Button|Switch|Intertechno|Nexa|Proove", re.I)),
-    ("Leak", re.compile(r"Leak|Water-?Sensor|WH55|H5054", re.I)),
+    ("Leak", re.compile(r"Leak|Water-?Sensor|WH55|H5054|Govee-Water", re.I)),
     ("Weather", re.compile(r"Fineoffset|Fine-?Offset|Ecowitt|Ambient|LaCrosse|Acurite|Oregon|Bresser|TFA|"
                            r"Nexus|Rubicson|Cotech|Emax|Misol|Alecto|Ventus|ThermoPro|Inkbird|Govee|"
                            r"Weather|WS\d|WH\d|TX\d|Rain|Wind|Thermo|Hygro|Temp|Soil|Lightning|Pool|Grill", re.I)),

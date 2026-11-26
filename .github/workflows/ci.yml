@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    # Decoders, channels, profiles, rtl_433 parsing, and that every
+    # non-GUI module imports with the terminal-only requirements.
+    name: Python ${{ matrix.python }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.11", "3.13"]
+        include:
+          - os: macos-latest
+            python: "3.13"
+          - os: windows-latest
+            python: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements-cli.txt
+      - run: pip install -r requirements-cli.txt pytest
+      - run: pytest -ra
+
+  gui:
+    # Full requirements: imports every Qt module and opens each window
+    # (desktop, --pocket, HAT touch UI) offscreen.
+    name: GUI smoke test
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Qt runtime libraries
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+      - run: pip install -r requirements.txt pytest
+      - run: pytest -ra
+
+  cardputer-zero:
+    # The radio-independent C++ mesh library, its unit tests and a decode
+    # cross-check against the desktop decoder. Built straight from the
+    # sources (no LVGL / SDL needed); the CMake build globs the same files.
+    name: CardputerZero mesh_tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cardputer-zero
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-cli.txt
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
+      - name: Build mesh_tests and radio_probe
+        run: |
+          mkdir -p build-ci
+          CXXFLAGS="-std=c++17 -O1 -Wall -Wextra -Isrc/mesh"
+          g++ $CXXFLAGS src/mesh/*.cpp tests/mesh_tests.cpp -lcrypto -pthread -o build-ci/mesh_tests
+          g++ $CXXFLAGS src/mesh/*.cpp tools/radio_probe.cpp -lcrypto -pthread -o build-ci/radio_probe
+      - name: Unit tests
+        run: build-ci/mesh_tests
+      - name: Cross-check against the desktop decoder
+        run: |
+          pip install -r ../requirements-cli.txt
+          python ../tests/make_golden.py build-ci/golden.jsonl
+          build-ci/mesh_tests build-ci/golden.jsonl
