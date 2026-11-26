@@ -11,3 +11,8 @@ logs/
 ref/
 # PlatformIO build output
 firmware/**/.pio/
+
+# Python packaging output
+build/
+dist/
+*.egg-info/
