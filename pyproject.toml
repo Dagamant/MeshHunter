@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meshhunter"
+dynamic = ["version"]
+description = "Log MeshCore and Meshtastic mesh nodes and LoRa traffic, with GPS, and upload discoveries"
+readme = "README.md"
+license = "0BSD"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "Dagamant" }]
+keywords = ["meshcore", "meshtastic", "lora", "sdr", "wardriving"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Environment :: X11 Applications :: Qt",
+    "Environment :: Console :: Curses",
+    "Topic :: Communications :: Ham Radio",
+]
+# Keep in step with requirements-cli.txt (tests/test_packaging.py checks).
+# Enough for the terminal front ends (meshhunter-tui / --headless).
+dependencies = [
+    "meshcore==2.3.8",
+    "pyserial==3.5",
+    "pyusb==1.3.1",
+    "bleak==3.0.2",
+    "pynmea2==1.19.0",
+    "platformdirs>=4.0",
+    "pycryptodome==3.23.0",
+]
+
+[project.optional-dependencies]
+# The desktop GUI, RTL-SDR waterfall and LoRa HAT support; together with
+# the base dependencies this is requirements.txt.
+gui = [
+    "PySide6==6.11.1",
+    "qasync==0.28.0",
+    "numpy==2.5.4",
+    "spidev==3.8; sys_platform == 'linux'",
+    "gpiod==2.6.0; sys_platform == 'linux'",
+]
+
+# Both are console scripts, so --headless / --list-devices output and
+# error messages are visible on Windows too (as with run.bat).
+[project.scripts]
+meshhunter = "meshhunter.__main__:main"
+meshhunter-tui = "meshhunter.__main__:tui_main"
+
+[project.urls]
+Homepage = "https://github.com/Dagamant/MeshHunter"
+Issues = "https://github.com/Dagamant/MeshHunter/issues"
+Funding = "https://ko-fi.com/dagamant"
+
+[tool.setuptools.dynamic]
+version = { attr = "meshhunter.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["meshhunter*"]
+
+[tool.setuptools.package-data]
+"meshhunter.gui_qt" = ["assets/*"]

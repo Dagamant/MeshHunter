@@ -99,6 +99,30 @@ dependencies.
 On macOS you can double-click `MeshHunter.command` in Finder instead. On
 Linux, a desktop launcher just needs `Exec=/path/to/MeshHunter/run.sh --desktop`.
 
+### Installing with pipx
+
+Instead of a checkout, you can install MeshHunter as a command with
+[pipx](https://pipx.pypa.io/) (or `pip install` into a venv of your own):
+
+```bash
+# Desktop app + terminal version
+pipx install "meshhunter[gui] @ git+https://github.com/Dagamant/MeshHunter"
+# Terminal version only (no Qt), e.g. on a headless Pi
+pipx install "git+https://github.com/Dagamant/MeshHunter"
+```
+
+That gives you two commands:
+
+- `meshhunter`: the desktop app (same flags as `run.sh`: `--desktop`,
+  `--pocket`, `--hat`; `--tui` / `--headless` / `--list-devices` hand over to
+  the terminal version)
+- `meshhunter-tui`: the terminal version (`--headless`, `--device`, ...)
+
+`pipx upgrade meshhunter` pulls the latest `main`; add `@v0.1.0` (any tag) to
+the URL to pin a release. Config and data live in the same per-user folders
+either way, so a pipx install and a checkout share them. The `[gui]` extra is
+what adds PySide6, NumPy and, on Linux, the LoRa HAT's `spidev` / `gpiod`.
+
 ## Configuration
 
 `example-config.json` shows the available fields — edit them from the
@@ -233,7 +257,7 @@ support and config as the desktop app. It doesn't need Qt:
 
 `run-tui.sh` creates the venv from `requirements-cli.txt` (no PySide6) if
 there isn't one yet. In an existing full install, `venv/bin/python main.py
---tui` works too.
+--tui` works too, and a pipx install has the same thing as `meshhunter-tui`.
 
 The TUI has three views (keys **1**–**3**). **Log** is the serial
 terminal. **Messages** is the decoded message feed, with **t** for text only,

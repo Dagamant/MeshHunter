@@ -1,7 +1,7 @@
 """Entry point for the terminal front ends.
 
-  main.py --tui        full-screen curses interface
-  main.py --headless   no interface: log lines to stdout, for systemd/cron
+  meshhunter-tui              full-screen curses interface (main.py --tui)
+  meshhunter-tui --headless   no interface: log lines to stdout, for systemd/cron
 
 Neither needs PySide6 (see requirements-cli.txt), so both run on boards
 where Qt isn't available. The same config.json, CSVs, uploads and
@@ -21,7 +21,7 @@ from .controller import Controller
 
 
 def parse_args(argv):
-    parser = argparse.ArgumentParser(prog="main.py", description="MeshHunter for the terminal")
+    parser = argparse.ArgumentParser(description="MeshHunter for the terminal")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--tui", action="store_true", help="full-screen terminal interface (default)")
     mode.add_argument("--headless", action="store_true",
