@@ -85,6 +85,11 @@ install `librtlsdr0` (`sudo apt install rtl-sdr`), and set the GPS port to
 
 ## Setup
 
+Tagged releases are on the [Releases page](https://github.com/Dagamant/MeshHunter/releases)
+with prebuilt downloads: the CardputerZero `.deb`, the sniffer firmware
+(`.uf2` / `.hex`) and the Python wheel. See [CHANGELOG.md](CHANGELOG.md) for
+what changed. To run the app from source:
+
 ```bash
 git clone https://github.com/Dagamant/MeshHunter.git
 cd MeshHunter

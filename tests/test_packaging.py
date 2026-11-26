@@ -68,3 +68,13 @@ def test_terminal_flags_go_to_tui(flag, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["meshhunter", flag])
     monkeypatch.setattr(entry, "tui_main", lambda: called.append(flag) or 0)
     assert entry.main() == 0 and called == [flag]
+
+
+def test_versions_agree_and_have_changelog_entry():
+    script = ROOT / ".github" / "scripts" / "release_info.py"
+    result = subprocess.run([sys.executable, str(script), "version"], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == meshhunter.__version__
+    notes = subprocess.run([sys.executable, str(script), "notes", meshhunter.__version__],
+                           capture_output=True, text=True, timeout=60)
+    assert notes.returncode == 0, notes.stderr

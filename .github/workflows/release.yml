@@ -1,0 +1,142 @@
+name: Release
+
+# Push a tag like v0.1.0 (matching meshhunter/__init__.py, the CardputerZero
+# CMake project version and app-builder.json, with a CHANGELOG.md section)
+# to build everything and publish a GitHub release with it attached.
+# Pull requests that touch release inputs run the same builds without
+# publishing, so a broken release build shows up before tagging.
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - .github/scripts/release_info.py
+      - CHANGELOG.md
+      - pyproject.toml
+      - meshhunter/__init__.py
+      - cardputer-zero/**
+      - firmware/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Check version and notes
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            version=$(python3 .github/scripts/release_info.py version "$GITHUB_REF")
+          else
+            version=$(python3 .github/scripts/release_info.py version)
+          fi
+          python3 .github/scripts/release_info.py notes "$version" > notes.md
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          cat notes.md
+
+  python:
+    name: Python wheel and sdist
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install build && python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python
+          path: dist/*
+          if-no-files-found: error
+
+  cardputer-zero:
+    name: CardputerZero .deb
+    needs: version
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cardputer-zero
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends crossbuild-essential-arm64 ninja-build
+          pip install "cmake>=3.31"
+      - uses: actions/cache@v4
+        with:
+          # The BSP sysroot and fetched sources (LVGL, fmt) the cross build downloads.
+          path: cardputer-zero/.cache
+          key: cp0-cache-${{ hashFiles('cardputer-zero/CMakeLists.txt', 'cardputer-zero/cmake/**') }}
+      - run: cmake --workflow --preset cp0-cross-package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cardputer-zero
+          path: cardputer-zero/dist/*.deb
+          if-no-files-found: error
+
+  firmware:
+    name: Sniffer firmware (XIAO nRF52840)
+    needs: version
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware/sniffer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('firmware/sniffer/platformio.ini') }}
+      - run: pip install platformio
+      - run: pio run
+      - name: Collect
+        run: |
+          mkdir -p out
+          version="${{ needs.version.outputs.version }}"
+          for ext in uf2 hex; do
+            cp ".pio/build/xiao_sx1262/firmware.$ext" "out/meshhunter-sniffer-xiao-nrf52840-sx1262-$version.$ext"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: firmware/sniffer/out/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [version, python, cardputer-zero, firmware]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          python3 .github/scripts/release_info.py notes "$VERSION" > notes.md
+          ls -l assets
+          gh release create "$GITHUB_REF_NAME" assets/* \
+            --title "MeshHunter $VERSION" --notes-file notes.md --verify-tag

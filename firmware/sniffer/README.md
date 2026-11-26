@@ -9,6 +9,10 @@ need a firmware update.
 
 ## Build and flash
 
+Each [release](https://github.com/Dagamant/MeshHunter/releases) has a
+prebuilt `meshhunter-sniffer-xiao-nrf52840-sx1262-<version>.uf2`: double-tap
+reset and copy it to the XIAO drive that appears. To build it yourself:
+
 ```bash
 cd firmware/sniffer
 ~/.platformio/penv/bin/pio run -t upload --upload-port /dev/ttyACM1
