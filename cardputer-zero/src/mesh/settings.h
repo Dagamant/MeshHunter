@@ -13,7 +13,7 @@
 
 namespace mesh {
 
-enum class SourceKind { CapLora, Replay, None };
+enum class SourceKind { CapLora, Xiao, Replay, None };
 
 struct Settings {
     // [application]
@@ -27,6 +27,9 @@ struct Settings {
     std::vector<std::string> hop_profiles;  // empty = region default
     SnifferTiming timing;
     std::string spi_device = "/dev/spidev0.1";
+    // XIAO sniffer serial port; "auto" = the first port whose USB product
+    // is "MeshHunter Sniffer".
+    std::string serial_device = "auto";
     std::string replay_file;
     int replay_interval_ms = 1500;
 
@@ -36,7 +39,7 @@ struct Settings {
     int gps_baud = 115200;
 
     // [storage]
-    std::string data_dir;  // empty = $XDG_DATA_HOME/meshhunter or ~/.local/share/meshhunter
+    std::string data_dir;  // empty = ~/MeshHunter
     bool raw_log = true;
 
     // [channels] extra decode keys
@@ -56,6 +59,12 @@ bool load_settings(const std::string& path, Settings& settings, std::string& err
 bool save_settings(const std::string& path, const Settings& settings, std::string& error);
 
 std::string user_config_path();  // ~/.config/meshhunter/meshhunter.conf
+// Where data went before ~/MeshHunter: $XDG_DATA_HOME/meshhunter or ~/.local/share/meshhunter.
+std::string legacy_data_dir();
+// Moves legacy_data_dir() to `dir` if `dir` doesn't exist yet. Returns a
+// note on what happened, or "" if there was nothing to move.
+std::string migrate_legacy_data_dir(const std::string& dir);
+const char* source_name(SourceKind kind);  // "cap", "xiao", "replay", "none"
 std::string expand_home(const std::string& path);
 bool make_dirs(const std::string& path);
 

@@ -46,7 +46,7 @@ constexpr std::array<HelpRow, 5> kRadioRows = {{
 
 constexpr std::array<HelpRow, 3> kGpsRows = {{
     {"GPS", "Cap GPS on /dev/ttyS0, 115200"},
-    {"LOGS", "~/.local/share/meshhunter"},
+    {"LOGS", "~/MeshHunter"},
     {"HOLD ESC", "Exit"},
 }};
 

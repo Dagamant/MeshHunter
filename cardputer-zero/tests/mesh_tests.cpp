@@ -19,6 +19,7 @@
 
 #include <openssl/evp.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -26,6 +27,17 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <thread>
+#include <vector>
+
+#if defined(__linux__)
+#include <atomic>
+#include <chrono>
+#include <fcntl.h>
+#include <mutex>
+#include <poll.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -278,6 +290,174 @@ void test_engine_records_advert() {
     std::filesystem::remove_all(base, ec);
 }
 
+void test_json_rows() {
+    std::vector<std::vector<double>> rows;
+    CHECK(mesh::json::get_number_rows(R"({"ev":"stat","profiles":[[0,5,1,2,0,3,1200],[1, 0,0,0,0,0,800]]})",
+                                      "profiles", rows));
+    CHECK(rows.size() == 2);
+    CHECK(rows.size() == 2 && rows[0].size() == 7 && rows[0][1] == 5 && rows[0][6] == 1200);
+    CHECK(rows.size() == 2 && rows[1].size() == 7 && rows[1][0] == 1 && rows[1][6] == 800);
+    CHECK(mesh::json::get_number_rows(R"({"ev":"rs","cur":0,"v":[[0,-98.5]]})", "v", rows));
+    CHECK(rows.size() == 1 && rows[0].size() == 2 && rows[0][1] == -98.5);
+    CHECK(mesh::json::get_number_rows(R"({"v":[]})", "v", rows) && rows.empty());
+    CHECK(!mesh::json::get_number_rows(R"({"v":3})", "v", rows));
+}
+
+void test_settings_storage() {
+    char dir_template[] = "/tmp/mesh_home_XXXXXX";
+    const char* home = mkdtemp(dir_template);
+    CHECK(home != nullptr);
+    if (!home) return;
+    const std::string base = home;
+    const char* old_home = std::getenv("HOME");
+    const std::string saved_home = old_home ? old_home : "";
+    setenv("HOME", home, 1);
+    unsetenv("XDG_DATA_HOME");
+
+    mesh::Settings s;
+    CHECK(s.resolved_data_dir() == base + "/MeshHunter");
+    s.data_dir = "~/elsewhere";
+    CHECK(s.resolved_data_dir() == base + "/elsewhere");
+
+    // Old data is moved to ~/MeshHunter once, and left alone after that.
+    CHECK(mesh::migrate_legacy_data_dir(base + "/MeshHunter").empty());  // nothing to move
+    mesh::make_dirs(base + "/.local/share/meshhunter");
+    std::ofstream(base + "/.local/share/meshhunter/repeaters.csv") << "node_id\r\n";
+    CHECK(!mesh::migrate_legacy_data_dir(base + "/MeshHunter").empty());
+    CHECK(std::filesystem::exists(base + "/MeshHunter/repeaters.csv"));
+    CHECK(!std::filesystem::exists(base + "/.local/share/meshhunter"));
+    mesh::make_dirs(base + "/.local/share/meshhunter");
+    CHECK(mesh::migrate_legacy_data_dir(base + "/MeshHunter").empty());  // target exists
+    CHECK(std::filesystem::exists(base + "/.local/share/meshhunter"));
+
+    // source=xiao and serial_device survive a save/load.
+    mesh::Settings x;
+    x.source = mesh::SourceKind::Xiao;
+    x.serial_device = "/dev/ttyACM3";
+    std::string error;
+    const std::string conf = base + "/meshhunter.conf";
+    CHECK(mesh::save_settings(conf, x, error));
+    mesh::Settings y;
+    CHECK(mesh::load_settings(conf, y, error));
+    CHECK(y.source == mesh::SourceKind::Xiao);
+    CHECK(y.serial_device == "/dev/ttyACM3");
+
+    if (old_home) setenv("HOME", saved_home.c_str(), 1);
+    std::error_code ec;
+    std::filesystem::remove_all(base, ec);
+}
+
+#if defined(__linux__)
+// Drives the XIAO source against a fake sniffer firmware on a pty.
+void test_xiao_source() {
+    const int master = posix_openpt(O_RDWR | O_NOCTTY);
+    CHECK(master >= 0);
+    if (master < 0) return;
+    grantpt(master);
+    unlockpt(master);
+    const std::string slave = ptsname(master);
+
+    std::mutex mu;
+    std::vector<std::string> commands;
+    std::atomic<bool> done{false};
+    std::thread firmware([&] {
+        auto say = [&](const std::string& line) {
+            const std::string data = line + "\n";
+            (void)!write(master, data.data(), data.size());
+        };
+        std::string buf;
+        while (!done) {
+            pollfd pfd{master, POLLIN, 0};
+            if (poll(&pfd, 1, 50) <= 0 || !(pfd.revents & POLLIN)) continue;
+            char tmp[256];
+            const ssize_t n = read(master, tmp, sizeof(tmp));
+            if (n <= 0) continue;
+            buf.append(tmp, static_cast<size_t>(n));
+            size_t nl;
+            while ((nl = buf.find('\n')) != std::string::npos) {
+                std::string cmd = buf.substr(0, nl);
+                buf.erase(0, nl + 1);
+                if (!cmd.empty() && cmd.back() == '\r') cmd.pop_back();
+                {
+                    std::lock_guard<std::mutex> lock(mu);
+                    commands.push_back(cmd);
+                }
+                const std::string word = cmd.substr(0, cmd.find(' '));
+                if (word == "HELLO") {
+                    say(R"({"ev":"hello","fw":"meshhunter-sniffer","ver":3,"radio":0,"running":0,"max_profiles":16})");
+                } else if (word == "GO") {
+                    say(R"({"ev":"ok","cmd":"GO"})");
+                    say(R"({"ev":"pkt","p":1,"f":906.8750,"bw":250.00,"sf":11,"cr":5,"sw":43,"rssi":-97.5,)"
+                        R"("snr":6.25,"crc":1,"ms":1234,"hex":"DEADBEEF01"})");
+                    say(R"({"ev":"stat","ms":5000,"cur":1,"hops":42,"nf":-112.0,)"
+                        R"("profiles":[[0,3,1,0,1,4,2000],[1,7,0,0,0,2,3000]]})");
+                    say(R"({"ev":"rs","cur":1,"v":[[0,-120.5],[1,-101.0]]})");
+                } else {
+                    say(R"({"ev":"ok","cmd":")" + word + R"("})");
+                }
+            }
+        }
+    });
+
+    const auto profiles = mesh::builtin_profiles(mesh::Region::US);
+    std::vector<mesh::Profile> selected = {*mesh::find_profile(profiles, "meshcore_us"),
+                                           *mesh::find_profile(profiles, "mt_longfast")};
+    auto source = mesh::make_xiao_source(slave);
+    source->set_profiles(selected, mesh::SnifferTiming{});
+    std::mutex pkt_mu;
+    std::vector<mesh::RxPacket> got;
+    source->start([&](mesh::RxPacket&& pkt) {
+        std::lock_guard<std::mutex> lock(pkt_mu);
+        got.push_back(std::move(pkt));
+    });
+    mesh::SnifferStatus status;
+    for (int i = 0; i < 60; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        status = source->status();
+        std::lock_guard<std::mutex> lock(pkt_mu);
+        if (!got.empty() && status.hops == 42 && status.rssi_now > -110) break;
+    }
+    {
+        std::lock_guard<std::mutex> lock(pkt_mu);
+        CHECK(got.size() == 1);
+        if (!got.empty()) {
+            CHECK(got[0].profile.key == "mt_longfast");
+            CHECK(got[0].profile.sync == mesh::kSyncMeshtastic);
+            CHECK(got[0].crc_ok);
+            CHECK(got[0].rssi == -97.5f);
+            CHECK(got[0].snr == 6.25f);
+            CHECK(mesh::to_hex(got[0].data) == "deadbeef01");
+        }
+    }
+    CHECK(status.state == mesh::RadioState::Listening);
+    CHECK(status.source == "XIAO " + slave.substr(slave.rfind('/') + 1));
+    CHECK(status.hops == 42);
+    CHECK(status.current == 1);
+    CHECK(status.stats.size() == 2);
+    if (status.stats.size() == 2) {
+        CHECK(status.stats[0].rx_ok == 3 && status.stats[0].rx_bad == 2 && status.stats[0].preamble_only == 4);
+        CHECK(status.stats[1].rx_ok == 7 && status.stats[1].listen_ms == 3000);
+        CHECK(status.stats[1].peak_rssi == -101.0f);
+    }
+    CHECK(status.rssi_now == -101.0f);
+    source->stop();
+    done = true;
+    firmware.join();
+    close(master);
+
+    std::lock_guard<std::mutex> lock(mu);
+    const auto has = [&](const std::string& c) {
+        return std::find(commands.begin(), commands.end(), c) != commands.end();
+    };
+    CHECK(has("HELLO") && has("CLR") && has("GO") && has("T 0 3000 2000 12000"));
+    CHECK(has("P 0 910.5250 62.5 7 5 12 8"));
+    char p1[96];
+    std::snprintf(p1, sizeof(p1), "P 1 %.4f 250 11 5 2b 8", selected[1].freq);
+    CHECK(has(p1));
+    CHECK(!commands.empty() && commands.back() == "STOP");  // sent on close
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -288,6 +468,11 @@ int main(int argc, char** argv) {
     test_meshcore_channels();
     test_time_on_air();
     test_engine_records_advert();
+    test_json_rows();
+    test_settings_storage();
+#if defined(__linux__)
+    test_xiao_source();
+#endif
     if (argc > 1) test_golden(argv[1]);
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

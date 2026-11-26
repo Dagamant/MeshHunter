@@ -149,4 +149,32 @@ bool get_bool(const std::string& line, const char* key, bool& out) {
     return false;
 }
 
+bool get_number_rows(const std::string& line, const char* key, std::vector<std::vector<double>>& out) {
+    size_t p = value_pos(line, key);
+    if (p == std::string::npos || p >= line.size() || line[p] != '[') return false;
+    out.clear();
+    bool in_row = false;
+    for (++p; p < line.size(); ++p) {
+        const char c = line[p];
+        if (c == ' ' || c == ',') continue;
+        if (c == '[' && !in_row) {
+            in_row = true;
+            out.emplace_back();
+        } else if (c == ']') {
+            if (!in_row) return true;
+            in_row = false;
+        } else if (in_row) {
+            const char* start = line.c_str() + p;
+            char* end = nullptr;
+            const double v = std::strtod(start, &end);
+            if (end == start) return false;
+            out.back().push_back(v);
+            p += static_cast<size_t>(end - start) - 1;
+        } else {
+            return false;
+        }
+    }
+    return false;
+}
+
 }  // namespace mesh::json

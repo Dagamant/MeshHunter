@@ -146,6 +146,9 @@ void Engine::build_channels() {
 void Engine::load_tables() {
     const std::string dir = settings_.resolved_data_dir();
     counters_.data_dir = dir;
+    // The data used to live in ~/.local/share/meshhunter; bring it along
+    // the first time we run with the ~/MeshHunter default.
+    if (settings_.data_dir.empty()) counters_.storage_note = migrate_legacy_data_dir(dir);
     if (!make_dirs(dir)) counters_.storage_error = "Can't create " + dir + ": " + std::strerror(errno);
     for (const auto& t : kTypes) {
         auto table = std::make_unique<CsvTable>(dir + "/" + t.file, kNodeFields, "node_id", "name");
@@ -176,6 +179,11 @@ void Engine::start() {
             CapLoraConfig cfg;
             cfg.spi_device = settings_.spi_device;
             source_ = make_cap_lora_source(cfg);
+        } else if (settings_.source == SourceKind::Xiao) {
+            source_ = make_xiao_source(settings_.serial_device);
+            // The Cap's GPS still works with a XIAO doing the listening,
+            // but nothing else powers the hat in this mode.
+            if (settings_.gps_enabled) cap_rail_switched_ = cap_power_rail_on();
         } else if (settings_.source == SourceKind::Replay) {
             source_ = make_replay_source(settings_.replay_file, settings_.replay_interval_ms);
         }
@@ -204,6 +212,10 @@ void Engine::stop() {
     started_ = false;
     if (source_) source_->stop();
     gps_.stop();
+    if (cap_rail_switched_) {
+        cap_power_rail_off();
+        cap_rail_switched_ = false;
+    }
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         stop_ = true;
@@ -282,7 +294,7 @@ void Engine::write_raw(const RxPacket& pkt, const std::string& decoded_json) {
     if (!raw_log_) return;
     json::ObjectWriter w;
     w.str("t", local_iso_timestamp_ms())
-        .str("radio", "cap")
+        .str("radio", source_name(settings_.source))
         .str("profile", pkt.profile.key)
         .num("freq", pkt.profile.freq)
         .num("bw", pkt.profile.bw)
