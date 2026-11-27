@@ -12,7 +12,6 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QToolTip, QVBoxLayout, QWidget
 
 from ...core.band_plan import KIND_COLORS, Band, assign_lanes, bands_at, bands_in
-
 from ..theme import ACCENT, ACCENT_LIGHT, DIM, LINE, TERMINAL_BG, TERMINAL_DIVIDER, pick_mono_font
 from .common import section_label
 
@@ -212,8 +211,8 @@ class WaterfallCanvas(QWidget):
 
                 def free(a, b):
                     return 0 <= a and b <= w and not any(
-                        l == lane and o is not band and self._freq_to_x(o.lo * 1e6, w) < b + 4
-                        and self._freq_to_x(o.hi * 1e6, w) > a - 4 for o, l in self._band_lanes())
+                        other_lane == lane and o is not band and self._freq_to_x(o.lo * 1e6, w) < b + 4
+                        and self._freq_to_x(o.hi * 1e6, w) > a - 4 for o, other_lane in self._band_lanes())
 
                 for tx in (r.right() + 3, r.left() - 3 - tw):
                     if free(tx, tx + tw):
@@ -240,7 +239,8 @@ class WaterfallCanvas(QWidget):
 
         if self._rows is not None:
             img_data = np.ascontiguousarray(self.lut[self._rows])
-            img = QImage(img_data.data, img_data.shape[1], img_data.shape[0], img_data.shape[1] * 4, QImage.Format_ARGB32)
+            img_h, img_w = img_data.shape[:2]
+            img = QImage(img_data.data, img_w, img_h, img_w * 4, QImage.Format_ARGB32)
             # One image row per pixel; rows not yet received stay
             # background rather than showing the colormap's lowest colour.
             rows_shown = min(self._filled, max(1, int(wf_rect.height() / self.row_px)))

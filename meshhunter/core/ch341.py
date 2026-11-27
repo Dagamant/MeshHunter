@@ -124,7 +124,9 @@ class Ch341:
                     "(see firmware/sniffer/README.md) and replug it."
                 ) from exc
             if exc.errno == 16:
-                raise Ch341Error("The CH341 USB radio is in use by another program (another MeshHunter, or meshtasticd?)") from exc
+                raise Ch341Error(
+                    "The CH341 USB radio is in use by another program (another MeshHunter, or meshtasticd?)"
+                ) from exc
             raise Ch341Error(f"Could not open the CH341 USB radio: {exc}") from exc
         if not self.serial:
             try:

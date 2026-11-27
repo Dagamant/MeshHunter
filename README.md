@@ -596,6 +596,10 @@ pip install -r requirements.txt pytest
 pytest
 ```
 
+CI also lints with [Ruff](https://docs.astral.sh/ruff/) (rules in
+`pyproject.toml`); `pip install ruff` then `ruff check .`, or
+`ruff check --fix .` to sort imports.
+
 The decoder, channel, profile and rtl_433 tests need only
 `requirements-cli.txt`; the GUI tests open each window offscreen and are
 skipped when PySide6 isn't installed. GitHub Actions runs them on every push

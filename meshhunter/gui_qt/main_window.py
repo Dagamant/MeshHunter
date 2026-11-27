@@ -877,7 +877,8 @@ class MainWindow(QMainWindow):
         if ev.crc_ok and p.network == "MeshCore" and p.kind == "ADVERT" and p.node:
             # Prefer the live companion worker when one is connected, so
             # both paths share one in-memory copy of the node CSVs.
-            recorder = self.worker if self.worker is not None and self.worker.meshcore is not None else self._hat_recorder
+            live = self.worker is not None and self.worker.meshcore is not None
+            recorder = self.worker if live else self._hat_recorder
             if recorder is not None:
                 asyncio.ensure_future(recorder.record_advert(p.node))
 

@@ -179,7 +179,9 @@ class HatPanel(QWidget):
     def _on_mc_param_changed(self, *_):
         if self._loading:
             return
-        current = (round(self.mc_freq.value(), 3), float(self.mc_bw.currentText()), self.mc_sf.value(), self.mc_cr.value())
+        current = (
+            round(self.mc_freq.value(), 3), float(self.mc_bw.currentText()), self.mc_sf.value(), self.mc_cr.value()
+        )
         match = next((n for n, p in MESHCORE_PRESETS.items() if p == current), _CUSTOM)
         if match != self.mc_preset.currentText():
             self._loading = True

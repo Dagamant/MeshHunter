@@ -15,11 +15,10 @@ from PySide6.QtWidgets import QApplication
 
 from ..core import ble_compat
 from ..core.paths import migrate_legacy_data
-from .main_window import MainWindow
 from .hat_pocket_window import PocketWindow
+from .main_window import MainWindow
 from .pocket_window import PocketMainWindow
 from .theme import STYLESHEET
-
 
 # The LoRa HAT's SX1262 (spi1-1cs overlay). Its presence means this is a
 # HAT device, which gets the fullscreen HAT touch UI unless --desktop or

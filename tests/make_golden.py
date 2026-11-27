@@ -15,7 +15,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import packets as P  # noqa: E402
 from meshhunter.core.channels import make_channel, subscribed_channels  # noqa: E402
 from meshhunter.core.sniffer_decode import (  # noqa: E402
     decode_meshcore,
@@ -23,6 +22,8 @@ from meshhunter.core.sniffer_decode import (  # noqa: E402
     default_meshtastic_channels,
 )
 from meshhunter.core.sniffer_worker import _jsonable  # noqa: E402
+
+import packets as P  # noqa: E402
 
 # Must match the channels test_golden() in cardputer-zero/tests/mesh_tests.cpp
 # decodes with: Public only, and every preset's default channel.

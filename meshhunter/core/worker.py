@@ -16,14 +16,14 @@ import time
 
 from meshcore import EventType, MeshCore
 
+from .channels import decrypt_group_text, subscribed_channels
 from .constants import NODE_DISPLAY_TYPES, REPEATER_TYPE, WDGWARS_NODE_TYPE
+from .log_format import format_channel_msg, format_contact_msg, format_rx_log
+from .messages import companion_dm_message, meshcore_message
 from .node_utils import has_coords, node_names
 from .paths import ALL_CONTACTS_CSV_PATH, EXTRA_NODE_TYPES, REPEATERS_CSV_PATH
-from .storage import load_all_contacts, load_known_nodes
-from .log_format import format_channel_msg, format_contact_msg, format_rx_log
-from .channels import decrypt_group_text, subscribed_channels
-from .messages import companion_dm_message, meshcore_message
 from .recorder import persist_nodes, record_all_contacts, upload_new_nodes
+from .storage import load_all_contacts, load_known_nodes
 
 
 class MeshCoreWorker:
@@ -269,7 +269,9 @@ class MeshCoreWorker:
         for node_type, (csv_path, node_type_label, log_label) in EXTRA_NODE_TYPES.items():
             matched = [c for c in contacts.values() if c.get("type") == node_type and has_coords(c)]
             if matched:
-                await self._record_nodes(matched, self.known_extra_nodes[node_type], csv_path, node_type_label, log_label)
+                await self._record_nodes(
+                    matched, self.known_extra_nodes[node_type], csv_path, node_type_label, log_label
+                )
 
         self._push_node_display(contacts)
 
