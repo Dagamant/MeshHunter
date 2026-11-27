@@ -14,6 +14,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    # Ruff (config in pyproject.toml): pyflakes, pycodestyle errors and
+    # import order. Platform-independent, so one runner is enough.
+    name: Ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install ruff==0.16.9
+      - run: ruff check --output-format=github .
+
   core:
     # Decoders, channels, profiles, rtl_433 parsing, and that every
     # non-GUI module imports with the terminal-only requirements.

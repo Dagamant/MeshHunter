@@ -28,7 +28,8 @@ def _normalize(specs):
 def test_base_dependencies_match_requirements_cli():
     # pycryptodome is imported directly, so the package pins it rather than
     # relying on meshcore pulling it in.
-    assert _normalize(PROJECT["dependencies"]) - {"pycryptodome==3.23.0"} == _normalize(_requirements("requirements-cli.txt"))
+    pinned = _normalize(PROJECT["dependencies"]) - {"pycryptodome==3.23.0"}
+    assert pinned == _normalize(_requirements("requirements-cli.txt"))
 
 
 def test_base_plus_gui_matches_requirements_txt():

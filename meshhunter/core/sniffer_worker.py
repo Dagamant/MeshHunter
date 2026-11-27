@@ -547,9 +547,8 @@ class SnifferWorker:
             self._write_raw(record)
             self._event_log("MT_RX", f"{who}snr={snr} rssi={rssi} " + format_meshtastic(d))
             self._on_meshtastic(d, msg, profile)
-            m = meshtastic_message(
-                d, rssi, snr, pname, {k: v.get("long_name") for k, v in self.meshtastic_nodes.items() if v.get("long_name")},
-            )
+            names = {k: v.get("long_name") for k, v in self.meshtastic_nodes.items() if v.get("long_name")}
+            m = meshtastic_message(d, rssi, snr, pname, names)
             m["source"] = source
             m["raw_hex"] = raw.hex()
             m["profile_label"] = profile.label() if profile else pname

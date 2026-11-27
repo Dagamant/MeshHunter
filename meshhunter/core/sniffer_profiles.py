@@ -218,7 +218,8 @@ def _auto_assign(config, radio_count):
     hop = [by_key[k] for k in (config.get("sniffer_hop_profiles") or DEFAULT_HOP_PROFILES) if k in by_key]
     out = [[] for _ in range(radio_count)]
     if config.get("sniffer_mode", "hop") == "fixed":
-        fixed = by_key.get(config.get("sniffer_fixed_profile") or DEFAULT_FIXED_PROFILE) or by_key[DEFAULT_FIXED_PROFILE]
+        fixed_key = config.get("sniffer_fixed_profile") or DEFAULT_FIXED_PROFILE
+        fixed = by_key.get(fixed_key) or by_key[DEFAULT_FIXED_PROFILE]
         out[0] = [fixed]
         rest = [p for p in hop if p.key != fixed.key]
         for i in range(1, radio_count):

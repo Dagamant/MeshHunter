@@ -27,18 +27,18 @@ from PySide6.QtWidgets import (
 
 from ...core.messages import MESH_LABELS, channel_text, from_text
 from ..theme import (
-    LINE,
-    PANEL,
     ACCENT,
     ACCENT_DIM,
     ACCENT_LIGHT,
     DIM,
+    LINE,
     LINE_SOFT,
     LIVE_PILL_BG,
     LOG_PATH,
     LOG_WARN,
     MESH_MESHCORE,
     MESH_MESHTASTIC,
+    PANEL,
     TXT,
     pick_mono_font,
 )
@@ -471,7 +471,8 @@ class PacketInspector(QFrame):
             rows.append(("route", m["route"]))
         if m.get("chan_hash") is not None:
             name = channel_text(m)
-            rows.append(("chan_hash", f"{m['chan_hash']} → {name}" if m.get("decrypted") and name else str(m["chan_hash"])))
+            chan = f"{m['chan_hash']} → {name}" if m.get("decrypted") and name else str(m["chan_hash"])
+            rows.append(("chan_hash", chan))
         if m.get("hops") is not None:
             rows.append(("path_len", str(m["hops"])))
         if m.get("payload_len") is not None:

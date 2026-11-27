@@ -178,9 +178,9 @@ def captured_payloads(rows=(), raw_log=True):
             take(m["grp_cipher"])
 
     if raw_log:
-        from .paths import SNIFFER_PACKETS_PATH
-
         import json
+
+        from .paths import SNIFFER_PACKETS_PATH
 
         try:
             with SNIFFER_PACKETS_PATH.open(encoding="utf-8") as fh:

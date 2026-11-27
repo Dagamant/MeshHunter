@@ -36,9 +36,9 @@ from ...core.sniffer_profiles import (
 )
 from ..theme import (
     ACCENT,
+    ACCENT_DIM,
     ACCENT_LIGHT,
     CHECK_OFF_BORDER,
-    ACCENT_DIM,
     DIM,
     LINE,
     LINE_SOFT,

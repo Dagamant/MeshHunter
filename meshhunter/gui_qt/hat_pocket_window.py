@@ -54,8 +54,8 @@ from ..core.rtlsdr import WaterfallWorker
 from ..core.worker import MeshCoreWorker
 from .bridge import Bridge
 from .theme import ACCENT, LOGO_PATH, pick_mono_font
-from .widgets.touch_controls import Segmented, Stepper
 from .widgets.sdr_waterfall import WaterfallCanvas
+from .widgets.touch_controls import Segmented, Stepper
 
 MAX_PACKETS = 500
 
@@ -621,7 +621,10 @@ class PocketWindow(QMainWindow):
         label_color = WARN if not ev.crc_ok else CHANNEL_COLOR
         headline = f'<span style="color:{label_color}">{esc(label)}</span>'
         if p.sender:
-            headline += f' <span style="color:{BRIGHT}">|</span> <span style="color:{NODE_COLOR}">{esc(p.sender)}</span>'
+            headline += (
+                f' <span style="color:{BRIGHT}">|</span>'
+                f' <span style="color:{NODE_COLOR}">{esc(p.sender)}</span>'
+            )
         if p.text:
             headline += f'<span style="color:{BRIGHT}">: {esc(p.text)}</span>'
         return (
@@ -630,7 +633,8 @@ class PocketWindow(QMainWindow):
         )
 
     def _add_notice(self, text, color):
-        self._add_item(f'<div style="font-size:{OTHER_HEADLINE_PX}px; font-weight:700; color:{color};">{html.escape(text)}</div>')
+        style = f"font-size:{OTHER_HEADLINE_PX}px; font-weight:700; color:{color};"
+        self._add_item(f'<div style="{style}">{html.escape(text)}</div>')
         self._session_log(f"-- {text} --")
 
     def _add_item(self, item_html):
